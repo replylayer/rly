@@ -8,10 +8,10 @@ ReplyLayer provides safe email infrastructure for AI agents: mailboxes, sending,
 
 ### npm
 
-The official npm package is `replylayer`. It installs both `replylayer` and `rly` commands.
+The official npm package is `rly` — the same name as on PyPI. It installs both the `rly` and `replylayer` commands. (The package was previously published as `replylayer`; that name is deprecated.)
 
 ```bash
-npm i -g replylayer
+npm i -g rly
 rly --help
 ```
 
@@ -28,7 +28,7 @@ On Debian and Ubuntu systems that enforce PEP 668, plain `pip install rly` may f
 
 ## Package Links
 
-- npm: https://www.npmjs.com/package/replylayer
+- npm: https://www.npmjs.com/package/rly
 - PyPI: https://pypi.org/project/rly/
 
 ## Security
