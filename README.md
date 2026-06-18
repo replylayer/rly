@@ -38,9 +38,8 @@ download. The signing key is in [`KEYS.txt`](./KEYS.txt) in this repository.
 
 **What the manifest covers:** the **PyPI wheels and sdist** (byte-identical to
 the files on PyPI) and the platform binaries. The **npm** package is *not*
-covered by this manifest — the npm registry signs published packages and the
-npm CLI verifies that signature automatically on install (`npm audit
-signatures` reports it for installed dependencies).
+covered by this manifest; verify npm registry signatures separately with `npm
+audit signatures`.
 
 1. Download the manifest, its signature, and the signing key:
 
