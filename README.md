@@ -64,13 +64,14 @@ signatures` reports it for installed dependencies).
    fail on the absent entries.
 
    ```bash
-   # a wheel installed from PyPI (substitute your version / platform tag)
-   grep 'rly-0.7.3-py3-none-manylinux_2_28_x86_64.whl' SHA256SUMS | sha256sum -c
-   # or the sdist
-   grep 'rly-0.7.3.tar.gz' SHA256SUMS | sha256sum -c
+   # GNU/Linux: verify every listed file you actually have, skip the rest
+   sha256sum --ignore-missing -c SHA256SUMS
+
+   # any platform: verify one file by name (replace with your download)
+   grep '<your-downloaded-file>' SHA256SUMS | sha256sum -c
    ```
 
-   On macOS use `shasum -a 256 -c` in place of `sha256sum -c`.
+   On macOS use `shasum -a 256 -c` in place of `sha256sum -c` (the `grep` form).
 
 ## Security
 
