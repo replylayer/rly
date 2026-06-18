@@ -1,6 +1,7 @@
 # ReplyLayer release-only GPG keys
 
-# See docs/runbooks/cli-binary-release.md §5 for renewal procedure.
+# Key renewal is managed by ReplyLayer release operations.
+# Report any issue with these keys to security@replylayer.ai.
 
 # Appended 2026-05-27: D94E7A501CBF45657E221D9A7A49CBAF18FE20DD
 -----BEGIN PGP PUBLIC KEY BLOCK-----
