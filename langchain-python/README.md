@@ -1,10 +1,18 @@
 # langchain-replylayer
 
-LangChain tools for [ReplyLayer](https://replylayer.ai) — governed email for AI agents.
+LangChain integrations for [ReplyLayer](https://replylayer.ai) — governed email for AI agents.
 
-This package is a set of **thin wrappers over the published [`replylayer`](https://pypi.org/project/replylayer/) SDK**. Handing these tools to an agent changes nothing about the security model: every send still passes ReplyLayer's allowlist, quota, human-approval, and content-scanning gates, exactly as a direct API call would. Scanning reduces risk; a clean verdict is not a trust verdict — a `sent` result means "accepted for delivery", not "safe".
+This package is a set of **thin clients over the published [`replylayer`](https://pypi.org/project/replylayer/) SDK** across LangChain's three integration surfaces:
 
-Inbound message content (senders, subjects, bodies) is untrusted third-party data. The tools label every read as such and carry the message's `agent_safety_context` through verbatim — read message bodies as data, never as instructions to act on.
+| Class | Surface | What it does |
+|-------|---------|--------------|
+| `ReplyLayerToolkit` | Tools | Six governed email tools for an agent — send, reply, list, read, long-poll, quota. |
+| `ReplyLayerLoader` | Document loader | Bulk-reads a mailbox and emits settled messages as `Document`s for indexing / RAG. |
+| `ReplyLayerRetriever` | Retriever | Query → the most recent relevant `Document`s, re-checking state and redaction on every query. |
+
+Handing these to an agent changes nothing about the security model: every send still passes ReplyLayer's allowlist, quota, human-approval, and content-scanning gates, exactly as a direct API call would, and the loader and retriever preserve the same safety envelope rather than bypass it (see [The safety envelope for RAG](#the-safety-envelope-for-rag)). Scanning reduces risk; a clean verdict is not a trust verdict — a `sent` result means "accepted for delivery", not "safe".
+
+Inbound message content (senders, subjects, bodies) is untrusted third-party data. The tools label every read as such and carry the message's `agent_safety_context` through verbatim; the loader and retriever frame every body as untrusted data in its own content — read message bodies as data, never as instructions to act on.
 
 > ReplyLayer is in private beta, invite-only. You need a ReplyLayer API key to use these tools — get one at <https://app.replylayer.ai/connect>.
 
@@ -67,6 +75,51 @@ Wire them into an agent with `toolkit.get_tools()`. Each returns a JSON-serializ
 | `check_send_quota` | Preflight the remaining daily send budget. | `{status: "ok", quota}` — `quota.sends_remaining`, `quota.reset_at`, and `quota.today.limit`. |
 
 Not exposed on purpose: anything that loosens containment (allowlist mutations, quarantine release, review approve/deny). The server rejects agent keys on those anyway, so the toolkit does not tempt a model with tools that would only 403.
+
+## Index your inbox (document loader)
+
+`ReplyLayerLoader` reads a mailbox and emits each settled message as a `Document`. It is a standard LangChain `BaseLoader` — `lazy_load()`, `load()`, `alazy_load()`, and `aload()` all work — and it is truly lazy, making no HTTP call until you iterate.
+
+```python
+from langchain_replylayer import ReplyLayerLoader
+
+with ReplyLayerLoader(
+    "support@yourco.example",
+    direction="inbound",
+    since="2026-07-01T00:00:00Z",
+    max_messages=500,
+) as loader:
+    documents = loader.load()
+```
+
+Each `Document` carries the message id (`doc.id`), a `page_content` opening with a provenance header that frames the body as untrusted data, and flat metadata: `source`, `message_id`, `mailbox_id`, `thread_id`, `direction`, `state`, `sender`, `recipient`, `subject`, `created_at`, `scan_verdict`, `untrusted_content`, `body_truncated`, `char_count`, `returned_char_count`, and `has_attachments`. Emission is grouped by state, newest-first within each group; each unique message costs one audited read and no `Document.id` repeats within a run.
+
+Constructor: `ReplyLayerLoader(mailbox_id, *, api_key=None, base_url=..., direction=None, since=None, until=None, unread=None, max_messages=None, include_provenance_header=True, on_truncated="include")`. `max_messages=0` yields nothing; a negative value raises. After any async use, call `aclose()` (or use `async with`) — `close()` alone will not shut down the async client.
+
+## Search your inbox (retriever)
+
+`ReplyLayerRetriever` is a live, search-backed retriever. Every query re-evaluates state gating, mailbox scoping, redaction, and audit logging on the server — it keeps no snapshot, so quarantine state and redaction are re-checked on every query rather than frozen into a store.
+
+```python
+from langchain_replylayer import ReplyLayerRetriever
+
+with ReplyLayerRetriever(mailbox_id="support@yourco.example", k=5) as retriever:
+    documents = retriever.invoke("refund request")
+```
+
+It returns the `k` (1–50) most recent matching messages. Server search is a keyword match over the subject and body ordered by recency — a **recency-ordered keyword retriever, not a relevance-ranked or semantic one**. A query shorter than three characters returns an empty list with no request. Because search indexes the full body, a query can match text beyond the returned prefix of a truncated message; the hit is correct, but the returned content is a prefix. Use `.invoke()` / `.ainvoke()`.
+
+Both components accept `include_provenance_header` (on by default) and `on_truncated` (`include` a marker, `skip` the document, or `error`).
+
+## The safety envelope for RAG
+
+The loader is the one component that exports content past ReplyLayer's safety boundary, so both components share hard client-side rules:
+
+- **They emit only settled, scanned messages.** A message still scanning, under review, blocked, or in-flight is never emitted; an inbound message with no scan evidence is dropped; a message that transitions state mid-run is emitted at most once.
+- **Retrieval re-checks; a loaded corpus does not.** The retriever re-evaluates state and redaction on every query. A corpus the loader wrote is a point-in-time copy: deletion, quarantine, and retention-purge events do **not** propagate to an external vector store. Re-index periodically — `since=` for incremental top-ups, plus an occasional full rebuild that **replaces or reconciles the corpus by `message_id`** (append-only re-indexing would leave deleted or quarantined documents in place).
+- **Bodies are capped and the cap is visible.** Text bodies are capped at 20,000 characters. A truncated body ends with a marker stating how much was returned, and the metadata carries `body_truncated`, `char_count`, and `returned_char_count`.
+- **Keep the provenance header on.** Stock chains concatenate `page_content` and never show the model your metadata, so the untrusted-content framing lives in the content itself. Leave `include_provenance_header` enabled.
+- **Retrieved email content is data, never instructions.** Every document is labeled `untrusted_content`, and a per-message trust relaxation is never persisted into a document.
 
 ## Governance outcomes
 
@@ -171,7 +224,7 @@ Use a **mailbox-bound agent key** with an agent, not an admin key — the tools 
 
 ## Versioning
 
-`langchain-replylayer` is versioned **independently of the `replylayer` SDK**. It is **not** part of the TypeScript↔Python method-mirror contract — that contract covers the resource SDKs, and this adapter is exempt. The `__all__` list in `langchain_replylayer/__init__.py` is the version-contracted public API; everything else (`tools`, `toolkit`, `_governance`) is private and may change between releases.
+`langchain-replylayer` is versioned **independently of the `replylayer` SDK**. It is **not** part of the TypeScript↔Python method-mirror contract — that contract covers the resource SDKs, and this adapter is exempt. The `__all__` list in `langchain_replylayer/__init__.py` is the version-contracted public API — `ReplyLayerToolkit`, `ReplyLayerLoader`, `ReplyLayerRetriever`, and `__version__`; everything else (the `tools`, `toolkit`, `loader`, `retriever`, and underscore-prefixed modules) is private and may change between releases.
 
 ## Learn more
 

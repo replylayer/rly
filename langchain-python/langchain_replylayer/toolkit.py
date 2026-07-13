@@ -18,6 +18,7 @@ from pydantic import ConfigDict, Field, PrivateAttr, SecretStr, model_validator
 
 from replylayer import AsyncReplyLayer, ReplyLayer
 
+from ._clients import _ClientPair
 from .tools import build_tools
 
 _DEFAULT_BASE_URL = "https://api.replylayer.ai"
@@ -57,9 +58,22 @@ class ReplyLayerToolkit(BaseToolkit):
         description="Mailbox the tools use when a call does not name one.",
     )
 
-    _sync_client: Optional[ReplyLayer] = PrivateAttr(default=None)
-    _async_client: Optional[AsyncReplyLayer] = PrivateAttr(default=None)
-    _closed: bool = PrivateAttr(default=False)
+    # The lazy sync+async client pair + its lifecycle live in the shared
+    # _ClientPair helper. The toolkit exposes the pair's state read-only so the
+    # existing surface (_sync_client / _async_client / _closed) is unchanged.
+    _pair: _ClientPair = PrivateAttr()
+
+    @property
+    def _sync_client(self) -> Optional[ReplyLayer]:
+        return self._pair._sync_client
+
+    @property
+    def _async_client(self) -> Optional[AsyncReplyLayer]:
+        return self._pair._async_client
+
+    @property
+    def _closed(self) -> bool:
+        return self._pair._closed
 
     @model_validator(mode="after")
     def _require_api_key(self) -> "ReplyLayerToolkit":
@@ -69,29 +83,18 @@ class ReplyLayerToolkit(BaseToolkit):
                 f"{_API_KEY_ENV_VAR} environment variable. "
                 "Get a key at https://app.replylayer.ai/connect"
             )
+        self._pair = _ClientPair(
+            api_key=self.api_key.get_secret_value(),
+            base_url=self.base_url,
+            owner="ReplyLayerToolkit",
+        )
         return self
 
     def _get_sync_client(self) -> ReplyLayer:
-        if self._closed:
-            raise RuntimeError("ReplyLayerToolkit is closed.")
-        if self._sync_client is None:
-            self._sync_client = ReplyLayer(
-                api_key=self.api_key.get_secret_value(),
-                base_url=self.base_url,
-                strict_outcome=True,
-            )
-        return self._sync_client
+        return self._pair.get_sync()
 
     def _get_async_client(self) -> AsyncReplyLayer:
-        if self._closed:
-            raise RuntimeError("ReplyLayerToolkit is closed.")
-        if self._async_client is None:
-            self._async_client = AsyncReplyLayer(
-                api_key=self.api_key.get_secret_value(),
-                base_url=self.base_url,
-                strict_outcome=True,
-            )
-        return self._async_client
+        return self._pair.get_async()
 
     def get_tools(self) -> list[BaseTool]:
         return build_tools(
@@ -103,20 +106,11 @@ class ReplyLayerToolkit(BaseToolkit):
     def close(self) -> None:
         """Close the sync HTTP client. Idempotent. If any async tool was
         invoked, call ``aclose()`` as well to close the async client."""
-        self._closed = True
-        if self._sync_client is not None:
-            self._sync_client.close()
-            self._sync_client = None
+        self._pair.close()
 
     async def aclose(self) -> None:
         """Close both HTTP clients. Idempotent."""
-        self._closed = True
-        if self._async_client is not None:
-            await self._async_client.aclose()
-            self._async_client = None
-        if self._sync_client is not None:
-            self._sync_client.close()
-            self._sync_client = None
+        await self._pair.aclose()
 
     def __enter__(self) -> "ReplyLayerToolkit":
         return self
