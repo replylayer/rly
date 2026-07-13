@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "langchain-replylayer"
+version = "0.1.1"
+description = "LangChain tools for ReplyLayer — governed email for AI agents"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+keywords = ["langchain", "replylayer", "email", "ai", "agent", "tools", "toolkit"]
+# No `License ::` classifier — the SPDX `license` field above is the PEP 639
+# source of truth, and hatchling rejects the deprecated classifier alongside it.
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Communications :: Email",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+  "replylayer>=0.23.0",
+  "langchain-core>=0.3.0,<2.0",
+]
+
+[project.urls]
+Homepage = "https://replylayer.ai"
+Documentation = "https://replylayer.ai/docs/guides/langchain"
+Repository = "https://github.com/replylayer/rly"
+Issues = "https://github.com/replylayer/rly/issues"
+
+[project.optional-dependencies]
+# Fast, hermetic unit tests — the tools are exercised against a mocked HTTP
+# layer (respx), never a live model. Mirrors sdks/python's dev extra.
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.24",
+  "respx>=0.21",
+]
+# Operator-run quickstart only (never used by unit CI): a real agent via
+# `create_agent`. Names a second credential, OPENAI_API_KEY.
+examples = [
+  "langchain>=1.0",
+  "langchain-openai",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["langchain_replylayer"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
