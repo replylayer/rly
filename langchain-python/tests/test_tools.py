@@ -237,3 +237,64 @@ def test_list_malformed_search_is_error() -> None:
     assert result["status"] == "error"
     assert result["code"] == "SEARCH_TERM_TOO_SHORT"
     assert result["details"] == {"min_search_length": 3}
+
+
+def test_list_sender_passthrough_sync() -> None:
+    with respx.mock(base_url=_BASE, assert_all_called=False) as router:
+        route = router.get("/v1/mailboxes/support/messages").mock(
+            return_value=httpx.Response(200, json={"messages": []})
+        )
+        tools, toolkit = _tools()
+        try:
+            tools["list_messages"].invoke({"sender": "alice@example.com"})
+        finally:
+            toolkit.close()
+        params = route.calls.last.request.url.params
+    assert params.get("sender") == "alice@example.com"
+    assert "search" not in params
+
+
+async def test_list_sender_passthrough_async() -> None:
+    with respx.mock(base_url=_BASE, assert_all_called=False) as router:
+        route = router.get("/v1/mailboxes/support/messages").mock(
+            return_value=httpx.Response(200, json={"messages": []})
+        )
+        tools, toolkit = _tools()
+        try:
+            await tools["list_messages"].ainvoke({"sender": "alice@example.com"})
+        finally:
+            await toolkit.aclose()
+        params = route.calls.last.request.url.params
+    assert params.get("sender") == "alice@example.com"
+    assert "search" not in params
+
+
+def test_list_sender_and_search_send_both_params() -> None:
+    with respx.mock(base_url=_BASE, assert_all_called=False) as router:
+        route = router.get("/v1/mailboxes/support/messages").mock(
+            return_value=httpx.Response(200, json={"messages": []})
+        )
+        tools, toolkit = _tools()
+        try:
+            tools["list_messages"].invoke(
+                {"sender": "example.com", "search": "invoice"}
+            )
+        finally:
+            toolkit.close()
+        params = route.calls.last.request.url.params
+    assert params.get("sender") == "example.com"
+    assert params.get("search") == "invoice"
+
+
+def test_list_omitted_sender_sends_no_sender_param() -> None:
+    with respx.mock(base_url=_BASE, assert_all_called=False) as router:
+        route = router.get("/v1/mailboxes/support/messages").mock(
+            return_value=httpx.Response(200, json={"messages": []})
+        )
+        tools, toolkit = _tools()
+        try:
+            tools["list_messages"].invoke({})
+        finally:
+            toolkit.close()
+        params = route.calls.last.request.url.params
+    assert "sender" not in params
