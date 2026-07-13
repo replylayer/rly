@@ -69,7 +69,7 @@ Wire them into an agent with `toolkit.get_tools()`. Each returns a JSON-serializ
 |------|--------------|--------|
 | `send_email` | Send a new outbound email from a mailbox. | `{status, message_id?}` — `status` is one of `sent`, `rejected_by_policy`, `rejected`, `held_for_human_review`, `retry_later`, `rate_limited`, `error`. |
 | `reply_to_email` | Reply to an inbound message, continuing its thread. | Same `status` set as `send_email`. |
-| `list_messages` | List recent messages (cursor-paginated). | `{status: "ok", messages: [...], has_more, cursor, untrusted_content: true}`. Each row carries `id`, `sender`, `subject`, `state`, `created_at`. |
+| `list_messages` | List recent messages (cursor-paginated). Filter with `sender` (case-insensitive substring match over the sender address) or `search` (subject and body only). | `{status: "ok", messages: [...], has_more, cursor, untrusted_content: true}`. Each row carries `id`, `sender`, `subject`, `state`, `created_at`. |
 | `read_message` | Read one message in full. | `{status: "ok", id, sender, subject, state, created_at, body, body_format, body_truncated, agent_safety_context, untrusted_content: true}` — or `{status: "not_found", recheck: false}`. |
 | `wait_for_message` | Long-poll a mailbox for the next message (≤30s). | `{status: "ok", message, untrusted_content: true}` — `message` is a compact row or `null` if none arrived. |
 | `check_send_quota` | Preflight the remaining daily send budget. | `{status: "ok", quota}` — `quota.sends_remaining`, `quota.reset_at`, and `quota.today.limit`. |

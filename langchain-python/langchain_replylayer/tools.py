@@ -166,7 +166,19 @@ class ListMessagesInput(BaseModel):
     )
     search: Optional[str] = Field(
         default=None,
-        description="Substring search over subject and body (minimum 3 characters).",
+        description=(
+            "Substring search over subject and body only (minimum 3 "
+            "characters). To filter by who sent a message, use `sender` "
+            "instead."
+        ),
+    )
+    sender: Optional[str] = Field(
+        default=None,
+        description=(
+            "Case-insensitive substring match over the sender address (e.g. "
+            "'alice@example.com' or just 'example.com'). Use this — not "
+            "`search` — to find mail from a specific sender."
+        ),
     )
     before: Optional[str] = Field(
         default=None,
@@ -333,6 +345,7 @@ def build_tools(
         direction: Optional[str] = None,
         unread: Optional[bool] = None,
         search: Optional[str] = None,
+        sender: Optional[str] = None,
         before: Optional[str] = None,
     ) -> dict[str, Any]:
         mailbox = _resolve_mailbox(mailbox_id, default_mailbox_id)
@@ -343,6 +356,7 @@ def build_tools(
                 direction=direction,
                 unread=unread,
                 search=search,
+                sender=sender,
                 before=before,
             )
         except ReplyLayerError as err:
@@ -362,6 +376,7 @@ def build_tools(
         direction: Optional[str] = None,
         unread: Optional[bool] = None,
         search: Optional[str] = None,
+        sender: Optional[str] = None,
         before: Optional[str] = None,
     ) -> dict[str, Any]:
         mailbox = _resolve_mailbox(mailbox_id, default_mailbox_id)
@@ -372,6 +387,7 @@ def build_tools(
                 direction=direction,
                 unread=unread,
                 search=search,
+                sender=sender,
                 before=before,
             )
         except ReplyLayerError as err:
