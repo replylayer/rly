@@ -1,6 +1,6 @@
 {
-  "version": "0.1.1",
-  "tag": "langchain-v0.1.1",
-  "source_commit": "86f2e2f5d7e60d3b97fe6422da9f1afd328bcd28",
-  "sdist_sha256": "5e754f9d34e0323124f65f6b58c8a6a1add0679b78278ba3427ea325e0be0407"
+  "version": "0.2.0",
+  "tag": "langchain-v0.2.0",
+  "source_commit": "41f438a282aea77bb7a968d968b013ea3a2c360b",
+  "sdist_sha256": "691f209a35112054a7971407adbd4629873daf7f88a87f21fbdb2d8c68f81ecf"
 }
