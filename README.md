@@ -79,3 +79,7 @@ Please report security issues privately to `security@replylayer.ai`.
 ## Source
 
 This repository is a public install and package-trust surface for ReplyLayer's CLI. The main product source is maintained separately.
+
+## `langchain-python/` — LangChain adapter source mirror
+
+[`langchain-python/`](./langchain-python) is a read-only source mirror of the [`langchain-replylayer`](https://pypi.org/project/langchain-replylayer/) PyPI package, updated automatically at each release and proven byte-identical to the released sdist. File issues here; pull requests against this directory cannot be merged directly — it is regenerated from the upstream source at every release.
