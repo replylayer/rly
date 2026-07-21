@@ -26,10 +26,69 @@ rly --help
 
 On Debian and Ubuntu systems that enforce PEP 668, plain `pip install rly` may fail with `externally-managed-environment`. Use `pipx install rly`, or install inside a virtual environment.
 
+### winget (Windows x64)
+
+The winget package is `ReplyLayer.CLI`. It needs no Node or Python toolchain.
+
+```powershell
+winget install --id ReplyLayer.CLI -e
+rly --help
+```
+
+**Windows x64 only** — there is no arm64 package — and it installs the `rly`
+command alone, not the `replylayer` alias. The installer is the Windows x64
+binary published on this repository's releases, and its hash is pinned in the
+winget manifest from the same GPG-signed `SHA256SUMS` described below.
+
+Submitting to the winget community source is a manual step in our release
+process, so this package can trail the newest npm/PyPI release — sometimes by
+more than one version. `npm i -g rly` is always the first channel to carry a new
+release; use it if you need the latest immediately.
+
+To update or remove:
+
+```powershell
+winget upgrade --id ReplyLayer.CLI -e
+winget uninstall --id ReplyLayer.CLI -e
+```
+
+### Install-channel collisions
+
+npm, pipx, and winget can each put an `rly` on your `PATH`. Your shell runs
+whichever comes first, so a fresh `winget install` can look like it did nothing
+or installed an old version when an earlier npm or pipx install is actually
+winning.
+
+Keep one global install channel active at a time. To see which executable is
+live:
+
+```powershell
+Get-Command rly -All   # Windows PowerShell (or: where.exe rly)
+```
+
+```bash
+which -a rly   # macOS / Linux
+```
+
+In PowerShell, bare `where` is an alias for `Where-Object`, not the `where.exe`
+program — use one of the two forms above.
+
+Then remove the channels you are not using:
+
+```powershell
+winget uninstall --id ReplyLayer.CLI -e
+npm uninstall -g rly
+pipx uninstall rly
+```
+
+`rly --version` reports the version of whichever executable actually ran —
+compare it against the channel you expect before filing an issue.
+
 ## Package Links
 
 - npm: https://www.npmjs.com/package/rly
 - PyPI: https://pypi.org/project/rly/
+- winget: https://github.com/microsoft/winget-pkgs/tree/master/manifests/r/ReplyLayer/CLI
 
 ## Verifying a release
 
