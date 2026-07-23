@@ -1,6 +1,6 @@
 # Trust — what each `rly` install artifact is, and how it is built
 
-This page states, artifact by artifact, what runs on your machine, what it
+This page states, artifact by artifact, exactly what runs on your machine, what it
 requires, and where it is built. Claims stronger than this table are wrong;
 if you find one on any ReplyLayer surface, report it (see `SECURITY.md`).
 
