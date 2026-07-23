@@ -26,3 +26,5 @@ the ReplyLayer CLI. Its contents fall into three classes:
 Bug reports and feature requests are welcome on this repository's issue
 tracker. For anything security-sensitive, use the private route in
 [`SECURITY.md`](./SECURITY.md) instead of a public issue.
+
+Questions about this contribution model are welcome on the issue tracker as well.
