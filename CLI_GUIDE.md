@@ -10,27 +10,32 @@ The ReplyLayer CLI gives your AI agent (or you) direct access to email from the 
 npm i -g rly
 ```
 
-Requires Node.js 22 or higher.
+Requires Node.js 22 or higher. The npm package is the JavaScript CLI — it runs
+on your host Node runtime, so both installing and running it need Node 22+ on
+the machine.
 
-**Supported platforms (prebuilt binary):** Linux x86_64 / aarch64 (glibc 2.28+),
-macOS arm64 / x86_64 (≥ 14.0), Windows x64. The bundled native binary is
-glibc-linked, so **Alpine / musl is not supported** — on a musl base image,
-install via npm on host Node 22+ (or set `RLY_FORCE_NPX=1`).
-
-### PyPI alias
+### PyPI (no Node toolchain)
 
 ```bash
 pipx install rly
 rly --help
 ```
 
-Installing the `rly` PyPI package exposes **both** the `rly` and `replylayer`
-commands (same launcher, two names) — matching the npm package. Examples use the
-short form:
+On supported platforms the `rly` PyPI package ships a **bundled native binary** —
+it needs Python 3.10+ but no Node toolchain to install or run. Installing it
+exposes **both** the `rly` and `replylayer` commands (same launcher, two names) —
+matching the npm package. Examples use the short form:
 
 ```bash
 rly --help   # the `replylayer` command is an identical legacy alias
 ```
+
+**Supported wheel platforms (bundled native binary):** Linux x86_64 / aarch64
+(glibc 2.28+), macOS arm64 / x86_64 (≥ 14.0), Windows x64. The bundled binary is
+glibc-linked, so **Alpine / musl is not supported** — on a musl base image use
+`npm i -g rly` on host Node 22+ instead. On a platform without a bundled wheel
+the launcher does not silently fall back; the explicit `RLY_FORCE_NPX=1` escape
+hatch runs the npm package instead, which needs Node 22+ on the host.
 
 On Debian and Ubuntu systems that enforce PEP 668, plain `pip install rly` may fail with `externally-managed-environment`. Use `pipx install rly` for a global CLI install, or run `pip install rly` inside a virtual environment.
 
@@ -42,26 +47,11 @@ pnpm add -g rly
 
 ### From source
 
-The CLI source is published at <https://github.com/replylayer/rly>:
-
-```bash
-git clone https://github.com/replylayer/rly.git
-cd rly
-npm install
-npm run build
-npm link
-```
-
-#### Prerequisites (source build)
-
-Building from source requires **Node.js ≥ 22 on your `PATH`** (the package's
-`engines.node` field). A host whose `PATH` Node is older than 22 — or where
-`node.exe` is ACL-restricted (a common Windows lock-down) — fails during
-`npm install`. That is a **host toolchain issue, not a CLI
-regression**: the sources compile cleanly on a compliant
-host. If you cannot run a recent Node toolchain, prefer the published bundled
-binary — `npm i -g rly` or `pipx install rly` — which carries its own
-runtime and has **no Node requirement** at all.
+A standalone public source checkout is **not yet available**. This repository
+currently provides installation and package-trust material (signed checksums,
+GPG key, SBOMs, release verification) — not the CLI source tree. Until the
+source is published here, install the JavaScript CLI with npm on Node.js 22+,
+or use the bundled PyPI wheel with pipx on a supported platform.
 
 ## Authentication
 
