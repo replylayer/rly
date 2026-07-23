@@ -138,9 +138,13 @@ jobs:
             const bad = files.filter((f) => !ok(f));
             if (bad.length) { console.error("::error::unexpected files in the npm tarball: " + bad.join(", ")); process.exit(1); }
           '
+          # Git-Bash on Windows runners: RUNNER_TEMP is a Windows path that GNU
+          # tar/cmp mangle — normalize to POSIX once, use everywhere.
+          TMP="$RUNNER_TEMP"
+          [ "$RUNNER_OS" = "Windows" ] && TMP="$(cygpath -u "$RUNNER_TEMP")"
           TARBALL="$(node -e 'console.log(require("./pack.json")[0].filename)')"
-          mkdir -p "$RUNNER_TEMP/pack" && tar -xzf "$TARBALL" -C "$RUNNER_TEMP/pack"
-          if ! cmp -s README.md "$RUNNER_TEMP/pack/package/README.md"; then
+          mkdir -p "$TMP/pack" && tar -xzf "$TARBALL" -C "$TMP/pack"
+          if ! cmp -s README.md "$TMP/pack/package/README.md"; then
             echo "::error::the README packed into the npm tarball differs from the repository root README"
             exit 1
           fi
@@ -150,7 +154,11 @@ jobs:
         run: |
           set -euo pipefail
           TARBALL="$(node -e 'console.log(require("./pack.json")[0].filename)')"
-          PREFIX="$RUNNER_TEMP/npm-prefix"; mkdir -p "$PREFIX"
+          # Git-Bash on Windows runners: RUNNER_TEMP is a Windows path that GNU
+          # tar/cmp mangle — normalize to POSIX once, use everywhere.
+          TMP="$RUNNER_TEMP"
+          [ "$RUNNER_OS" = "Windows" ] && TMP="$(cygpath -u "$RUNNER_TEMP")"
+          PREFIX="$TMP/npm-prefix"; mkdir -p "$PREFIX"
           npm install -g --prefix "$PREFIX" "./$TARBALL"
           if [ "$RUNNER_OS" = "Windows" ]; then
             "$PREFIX/rly.cmd" --version
@@ -164,7 +172,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          CLEAN="$RUNNER_TEMP/clean-install"
+          # Git-Bash on Windows runners: RUNNER_TEMP is a Windows path that GNU
+          # tar/cmp mangle — normalize to POSIX once, use everywhere.
+          TMP="$RUNNER_TEMP"
+          [ "$RUNNER_OS" = "Windows" ] && TMP="$(cygpath -u "$RUNNER_TEMP")"
+          CLEAN="$TMP/clean-install"
           mkdir -p "$CLEAN"
           git archive HEAD | tar -x -C "$CLEAN"
           cd "$CLEAN"
