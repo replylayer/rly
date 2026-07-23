@@ -1,0 +1,27 @@
+# Publishing-control and managed-source authority. Every path listed here
+# requires @replylayer/release-security review once path-specific CODEOWNER
+# review is enabled on the main ruleset. langchain-python/** is deliberately
+# ABSENT: the LangChain adapter mirror merges without this gate.
+#
+# Self-protecting: this file is its own first entry.
+
+/.github/CODEOWNERS            @replylayer/release-security
+/.github/workflows/            @replylayer/release-security
+/.github/scripts/              @replylayer/release-security
+/.github/fixtures/             @replylayer/release-security
+/.github/dependabot.yml        @replylayer/release-security
+/README.md                     @replylayer/release-security
+/TRUST.md                      @replylayer/release-security
+/SECURITY.md                   @replylayer/release-security
+/.gitleaks.toml                @replylayer/release-security
+
+# Managed CLI source paths (synced from the canonical upstream; absent until
+# the first source seed, gated from day one).
+/.nvmrc                        @replylayer/release-security
+/.rly-source.json              @replylayer/release-security
+/package.json                  @replylayer/release-security
+/package-lock.json             @replylayer/release-security
+/tsconfig.json                 @replylayer/release-security
+/src/                          @replylayer/release-security
+/CLI_GUIDE.md                  @replylayer/release-security
+/LICENSE                       @replylayer/release-security
