@@ -15,9 +15,14 @@ npm i -g rly
 rly --help
 ```
 
+Requires Node.js 22 or higher. The npm package is the JavaScript CLI — it runs
+on your host Node runtime, so both installing and running it need Node 22+.
+
 ### PyPI
 
-The PyPI package is `rly`. Use `pipx` for a global CLI install.
+The PyPI package is `rly`. Use `pipx` for a global CLI install. On supported
+platforms the wheel ships a **bundled native binary** — it needs Python 3.10+
+but no Node toolchain to install or run.
 
 ```bash
 pipx install rly
@@ -137,7 +142,7 @@ Please report security issues privately to `security@replylayer.ai`.
 
 ## Source
 
-This repository is a public install and package-trust surface for ReplyLayer's CLI. The main product source is maintained separately.
+This repository is a public install and package-trust surface for ReplyLayer's CLI. The main product source is maintained separately, and a standalone public CLI source checkout is not yet available here. Install the JavaScript CLI with npm on Node.js 22+, or use the bundled PyPI wheel with pipx on a supported platform.
 
 ## `langchain-python/` — LangChain adapter source mirror
 
