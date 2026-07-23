@@ -1,0 +1,657 @@
+name: publish npm (rly)
+
+run-name: "publish npm rly ${{ inputs.version }} [${{ inputs.correlation_id }}]"
+
+# The ONLY workflow that publishes npm `rly`, via npm Trusted Publishing (OIDC)
+# — no long-lived token exists or is accepted anywhere in this file.
+#
+# Design (three jobs, fail-closed):
+#   preflight-build      — NO OIDC. Validates the event/tag/actor/inputs,
+#                          rebuilds the control-plane digest, builds + packs +
+#                          scans the exact tarball, uploads it as a same-run
+#                          artifact with recorded digests.
+#   publish-or-reconcile — the ONLY id-token:write job, behind the protected
+#                          `npm-publish` environment. Never checks out, never
+#                          installs dependencies, never runs project or package
+#                          lifecycle code: it re-verifies via API + the same-run
+#                          artifact, probes the registry, and either publishes
+#                          the pre-built tarball with --ignore-scripts or
+#                          reconciles an already-present identical version.
+#   post-publish-verify  — NO OIDC. Independently verifies registry bytes,
+#                          both bin aliases, signatures, and provenance.
+#
+# Trigger contract: workflow_dispatch at the immutable release tag ONLY
+# (ref: cli-vX.Y.Z). This is load-bearing — it makes github.ref/github.sha,
+# the executed workflow revision, and the npm provenance claims all name the
+# release source commit. push/pull_request/pull_request_target must never be
+# added. Reruns are prohibited (run_attempt must be 1): every retry is a fresh
+# dispatch with a new correlation_id, re-entering every guard.
+#
+# Toolchain: Node 24 (SHA-pinned setup) whose BUNDLED npm satisfies Trusted
+# Publishing (npm >= 11.5.1, re-verified against docs.npmjs.com 2026-07-23);
+# both versions are asserted at runtime and no job ever installs npm while
+# id-token could be minted.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Stable X.Y.Z being published (strict semver; RCs rejected)"
+        required: true
+        type: string
+      public_sha:
+        description: "Full 40-hex public source commit the tag must dereference to"
+        required: true
+        type: string
+      tag:
+        description: "cli-vX.Y.Z — must equal the dispatch ref"
+        required: true
+        type: string
+      mode:
+        description: "Only publish-or-reconcile is valid"
+        required: true
+        type: choice
+        options: [publish-or-reconcile]
+      correlation_id:
+        description: "Unique ID minted by the dispatching orchestrator (fresh per dispatch)"
+        required: true
+        type: string
+      control_plane_sha256:
+        description: "64-hex canonical control-plane digest from private verify-public-source"
+        required: true
+        type: string
+      recovery_reason:
+        description: "EMPTY for the automated path; required non-empty for an allowlisted human recovery"
+        required: false
+        type: string
+        default: ""
+      dry_run:
+        description: "Preflight only — no publish, no post-verify"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: none
+
+concurrency:
+  group: npm-rly-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  preflight-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: none
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      tarball_name: ${{ steps.pack.outputs.tarball_name }}
+      tarball_sha256: ${{ steps.pack.outputs.tarball_sha256 }}
+      tarball_sha512: ${{ steps.pack.outputs.tarball_sha512 }}
+    steps:
+      - name: "Guards: attempt, inputs, event ref/SHA, actor identity"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+          PUBLIC_SHA: ${{ inputs.public_sha }}
+          IN_TAG: ${{ inputs.tag }}
+          MODE: ${{ inputs.mode }}
+          CORRELATION_ID: ${{ inputs.correlation_id }}
+          CONTROL_SHA: ${{ inputs.control_plane_sha256 }}
+          RECOVERY_REASON: ${{ inputs.recovery_reason }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          EVENT_REF: ${{ github.ref }}
+          EVENT_SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          ACTOR_ID: ${{ github.actor_id }}
+        run: |
+          set -euo pipefail
+          [ "$RUN_ATTEMPT" = "1" ] || { echo "::error::run_attempt=${RUN_ATTEMPT} — reruns are prohibited (github.actor would remain the original); retry with a FRESH dispatch and new correlation_id"; exit 1; }
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::version must be strict stable semver (got '$VERSION'; RCs are never published here)"; exit 1; }
+          [[ "$PUBLIC_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::public_sha must be full 40-hex"; exit 1; }
+          [[ "$CONTROL_SHA" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::control_plane_sha256 must be 64-hex"; exit 1; }
+          [ "$IN_TAG" = "cli-v${VERSION}" ] || { echo "::error::tag '$IN_TAG' != cli-v${VERSION}"; exit 1; }
+          [ "$MODE" = "publish-or-reconcile" ] || { echo "::error::mode '$MODE' is not allowed"; exit 1; }
+          [ -n "$CORRELATION_ID" ] || { echo "::error::correlation_id must be non-empty"; exit 1; }
+          [ "$EVENT_REF" = "refs/tags/${IN_TAG}" ] || { echo "::error::dispatch ref '$EVENT_REF' is not the immutable tag refs/tags/${IN_TAG} — a checkout override cannot repair the OIDC event context"; exit 1; }
+          [ "$EVENT_SHA" = "$PUBLIC_SHA" ] || { echo "::error::event SHA ${EVENT_SHA} != public_sha ${PUBLIC_SHA}"; exit 1; }
+          [ "$TRIGGERING_ACTOR" = "$ACTOR" ] || { echo "::error::triggering_actor '$TRIGGERING_ACTOR' != actor '$ACTOR'"; exit 1; }
+          ENC_ACTOR=$(python3 -c "import urllib.parse,os; print(urllib.parse.quote(os.environ['ACTOR']))")
+          API_ID=$(gh api "users/${ENC_ACTOR}" --jq .id)
+          [ "$API_ID" = "$ACTOR_ID" ] || { echo "::error::actor '${ACTOR}' immutable id ${API_ID} != event actor_id ${ACTOR_ID}"; exit 1; }
+          if [ "$ACTOR" = "replylayer-release-mirror[bot]" ]; then
+            [ "$ACTOR_ID" = "294898943" ] || { echo "::error::release App bot id ${ACTOR_ID} != pinned 294898943"; exit 1; }
+            [ -z "$RECOVERY_REASON" ] || { echo "::error::automated dispatches must carry an EMPTY recovery_reason"; exit 1; }
+          elif [ "$ACTOR" = "mcintoshjames-sketch" ]; then
+            [ "$ACTOR_ID" = "233505925" ] || { echo "::error::recovery human id ${ACTOR_ID} != pinned 233505925"; exit 1; }
+            [ -n "$RECOVERY_REASON" ] || { echo "::error::human recovery requires a non-empty recovery_reason"; exit 1; }
+            echo "::warning::HUMAN RECOVERY dispatch by ${ACTOR}: ${RECOVERY_REASON}"
+          else
+            echo "::error::actor '${ACTOR}' is not in the reviewed dispatch allowlist (release App bot or the recovery human) — change the allowlist only via a reviewed control-plane PR"
+            exit 1
+          fi
+          echo "guards OK (actor=${ACTOR}, correlation=${CORRELATION_ID})"
+
+      - name: Checkout exactly the event SHA
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Set up Node 24 (bundled npm must satisfy Trusted Publishing)
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+
+      - name: Assert toolchain minimums (no npm self-install, ever)
+        run: |
+          set -euo pipefail
+          node -e '
+            const [maj, min] = process.versions.node.split(".").map(Number);
+            if (maj < 22 || (maj === 22 && min < 14)) { console.error(`::error::node ${process.versions.node} < 22.14.0`); process.exit(1); }
+          '
+          NPM_V=$(npm --version)
+          node -e '
+            const [a, b, c] = process.argv[1].split(".").map(Number);
+            const ok = a > 11 || (a === 11 && (b > 5 || (b === 5 && c >= 1)));
+            if (!ok) { console.error(`::error::bundled npm ${process.argv[1]} < 11.5.1 (Trusted Publishing minimum) — change the pinned Node in a reviewed PR; never npm install -g npm here`); process.exit(1); }
+          ' "$NPM_V"
+          echo "node $(node --version), npm ${NPM_V}"
+
+      - name: Control-plane digest matches the externally supplied value
+        env:
+          CONTROL_SHA: ${{ inputs.control_plane_sha256 }}
+        run: |
+          set -euo pipefail
+          node - <<'NODE' > /tmp/control-plane-manifest.json
+          const { createHash } = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const root = process.cwd();
+          const fixed = ['README.md', '.github/workflows/publish-npm.yml', '.github/scripts/check-readme-contract.mjs'];
+          const fixtures = fs.existsSync(path.join(root, '.github/fixtures/readme-contract'))
+            ? fs.readdirSync(path.join(root, '.github/fixtures/readme-contract')).map((f) => '.github/fixtures/readme-contract/' + f)
+            : [];
+          const entries = [...fixed, ...fixtures].sort().map((rel) => {
+            const full = path.join(root, rel);
+            if (!fs.existsSync(full)) return { path: rel, sha256: 'ABSENT' };
+            return { path: rel, sha256: createHash('sha256').update(fs.readFileSync(full)).digest('hex') };
+          });
+          const digest = createHash('sha256').update(JSON.stringify(entries)).digest('hex');
+          console.log(JSON.stringify({ entries, digest }, null, 2));
+          NODE
+          ACTUAL=$(node -e 'console.log(require("/tmp/control-plane-manifest.json").digest)')
+          if node -e 'process.exit(require("/tmp/control-plane-manifest.json").entries.some(e => e.sha256 === "ABSENT") ? 0 : 1)'; then
+            echo "::error::control-plane files ABSENT at the tagged commit"; exit 1
+          fi
+          [ "$ACTUAL" = "$CONTROL_SHA" ] || { echo "::error::control-plane digest ${ACTUAL} != supplied ${CONTROL_SHA} — the tagged control plane is not the privately verified one"; exit 1; }
+          echo "control plane OK (${ACTUAL})"
+
+      - name: Tag dereferences to the event SHA and is reachable from protected main
+        env:
+          IN_TAG: ${{ inputs.tag }}
+          PUBLIC_SHA: ${{ inputs.public_sha }}
+        run: |
+          set -euo pipefail
+          TAG_SHA=$(git ls-remote origin "refs/tags/${IN_TAG}" | cut -f1)
+          [ "$TAG_SHA" = "$PUBLIC_SHA" ] || { echo "::error::${IN_TAG} dereferences to '${TAG_SHA}', expected ${PUBLIC_SHA}"; exit 1; }
+          git fetch -q origin main
+          git merge-base --is-ancestor "$PUBLIC_SHA" origin/main || { echo "::error::${PUBLIC_SHA} is not reachable from protected public main"; exit 1; }
+          echo "tag + reachability OK"
+
+      - name: Package metadata + source metadata + managed-tree hash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          node -e '
+            const p = require("./package.json");
+            const fail = (m) => { console.error("::error::" + m); process.exitCode = 1; };
+            if (p.name !== "rly") fail(`name ${p.name} != rly`);
+            if (p.version !== process.env.VERSION) fail(`package version ${p.version} != ${process.env.VERSION}`);
+            if (p.repository?.url !== "git+https://github.com/replylayer/rly.git") fail(`repository ${p.repository?.url} is not the public repo`);
+            const allowed = new Set(["build", "prepublishOnly", "typecheck", "clean"]);
+            const extra = Object.keys(p.scripts ?? {}).filter((s) => !allowed.has(s));
+            if (extra.length) fail(`unexpected package scripts: ${extra.join(", ")} — no unreviewed lifecycle may exist`);
+            const meta = require("./.rly-source.json");
+            if (meta.version !== process.env.VERSION) fail(`.rly-source.json version ${meta.version} != ${process.env.VERSION}`);
+          '
+          # Managed-tree hash: same algorithm as the canonical generator —
+          # sorted '/'-normalized rel path + NUL + bytes + NUL over every
+          # sync-managed file, excluding README.md (public-owned) and
+          # .rly-source.json (self).
+          node - <<'NODE'
+          const { createHash } = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const managedTop = new Set(['.nvmrc', 'CLI_GUIDE.md', 'LICENSE', 'package-lock.json', 'package.json', 'src', 'tsconfig.json']);
+          const rels = [];
+          (function walk(dir, base) {
+            for (const e of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+              const full = path.join(dir, e.name);
+              if (e.isDirectory()) walk(full, base);
+              else rels.push(path.relative(base, full));
+            }
+          })(process.cwd(), process.cwd());
+          const managed = rels.filter((r) => managedTop.has(r.split(path.sep)[0]));
+          managed.sort();
+          const h = createHash('sha256');
+          for (const rel of managed) {
+            h.update(rel.split(path.sep).join('/'));
+            h.update('\0');
+            h.update(fs.readFileSync(rel));
+            h.update('\0');
+          }
+          const actual = h.digest('hex');
+          const expected = require('./.rly-source.json').managed_tree_sha256;
+          if (actual !== expected) {
+            console.error(`::error::managed-tree hash ${actual} != .rly-source.json ${expected}`);
+            process.exit(1);
+          }
+          console.log(`managed-tree hash OK (${actual})`);
+          NODE
+
+      - name: README contract (tagged public checker + fixtures)
+        run: |
+          set -euo pipefail
+          node .github/scripts/check-readme-contract.mjs --fixtures .github/fixtures/readme-contract
+          node .github/scripts/check-readme-contract.mjs README.md
+
+      - name: Build from the committed lockfile (scripts disabled on install)
+        run: |
+          set -euo pipefail
+          BEFORE=$(sha256sum package-lock.json | cut -d' ' -f1)
+          npm ci --ignore-scripts --no-audit --no-fund
+          AFTER=$(sha256sum package-lock.json | cut -d' ' -f1)
+          [ "$BEFORE" = "$AFTER" ] || { echo "::error::npm ci rewrote package-lock.json"; exit 1; }
+          npm run typecheck
+          npm run build
+          node -e 'require("node:fs").accessSync("dist/bin/replylayer.js")'
+
+      - name: Pack + inventory + README byte-identity + content scan + digests
+        id: pack
+        run: |
+          set -euo pipefail
+          npm pack --json --ignore-scripts > /tmp/pack.json
+          node -e '
+            const files = require("/tmp/pack.json")[0].files.map((f) => f.path);
+            const ok = (p) => /^dist\//.test(p) || ["package.json", "README.md", "LICENSE", "CLI_GUIDE.md"].includes(p);
+            const bad = files.filter((f) => !ok(f));
+            if (bad.length) { console.error("::error::unexpected tarball files: " + bad.join(", ")); process.exit(1); }
+          '
+          TARBALL=$(node -e 'console.log(require("/tmp/pack.json")[0].filename)')
+          EXTRACT=$(mktemp -d)
+          tar -xzf "$TARBALL" -C "$EXTRACT"
+          cmp -s README.md "$EXTRACT/package/README.md" || { echo "::error::packed README differs from the tagged root README"; exit 1; }
+          if find "$EXTRACT" \( -type l -o -type p -o -type s \) | grep -q .; then
+            echo "::error::non-regular file entries inside the tarball"; exit 1
+          fi
+          node - "$EXTRACT/package" <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const root = process.argv[2];
+          const patterns = [
+            [/@replylayer\//g, 'private workspace package reference'],
+            [/-----BEGIN [A-Z ]*PRIVATE KEY-----/g, 'private key block'],
+            [/\bsk_live_[0-9a-zA-Z]{8,}/g, 'live secret key'],
+            [/\bxoxb-[0-9A-Za-z-]{10,}/g, 'slack token'],
+            [/AKIA[0-9A-Z]{16}/g, 'AWS access key id'],
+          ];
+          const ALLOW = new Set(['AKIAIOSFODNN7EXAMPLE']);
+          let bad = 0;
+          (function walk(dir) {
+            for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+              const full = path.join(dir, e.name);
+              if (e.isDirectory()) { walk(full); continue; }
+              const body = fs.readFileSync(full, 'utf8');
+              for (const [re, why] of patterns) {
+                for (const m of body.matchAll(re)) {
+                  if (ALLOW.has(m[0])) continue;
+                  console.error(`::error::${path.relative(root, full)}: "${m[0]}" (${why})`);
+                  bad = 1;
+                }
+              }
+            }
+          })(root);
+          process.exit(bad);
+          NODE
+          SHA256=$(sha256sum "$TARBALL" | cut -d' ' -f1)
+          SHA512="sha512-$(openssl dgst -sha512 -binary "$TARBALL" | openssl base64 -A)"
+          mkdir -p /tmp/preflight-out
+          cp "$TARBALL" /tmp/preflight-out/
+          VERSION_IN="${{ inputs.version }}" TAG_IN="${{ inputs.tag }}" SHA_IN="${{ inputs.public_sha }}" \
+          CORR_IN="${{ inputs.correlation_id }}" CTRL_IN="${{ inputs.control_plane_sha256 }}" \
+          TARBALL_IN="$TARBALL" S256_IN="$SHA256" S512_IN="$SHA512" node -e '
+            const fs = require("node:fs");
+            fs.writeFileSync("/tmp/preflight-out/preflight-manifest.json", JSON.stringify({
+              version: process.env.VERSION_IN, tag: process.env.TAG_IN, public_sha: process.env.SHA_IN,
+              correlation_id: process.env.CORR_IN, control_plane_sha256: process.env.CTRL_IN,
+              tarball: process.env.TARBALL_IN, sha256: process.env.S256_IN, sha512: process.env.S512_IN,
+              files: require("/tmp/pack.json")[0].files.map((f) => f.path).sort(),
+            }, null, 2) + "\n");
+          '
+          echo "tarball_name=$TARBALL" >> "$GITHUB_OUTPUT"
+          echo "tarball_sha256=$SHA256" >> "$GITHUB_OUTPUT"
+          echo "tarball_sha512=$SHA512" >> "$GITHUB_OUTPUT"
+          echo "tarball: $TARBALL sha256=$SHA256"
+
+      - name: Upload the inspected tarball as a same-run artifact
+        id: upload
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: npm-publish-preflight-${{ inputs.version }}-${{ inputs.correlation_id }}
+          path: /tmp/preflight-out/
+          retention-days: 30
+          if-no-files-found: error
+
+  publish-or-reconcile:
+    needs: preflight-build
+    if: inputs.dry_run == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: "Repeat guards independently (attempt, inputs, event, actor)"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+          PUBLIC_SHA: ${{ inputs.public_sha }}
+          IN_TAG: ${{ inputs.tag }}
+          MODE: ${{ inputs.mode }}
+          CORRELATION_ID: ${{ inputs.correlation_id }}
+          CONTROL_SHA: ${{ inputs.control_plane_sha256 }}
+          RECOVERY_REASON: ${{ inputs.recovery_reason }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          EVENT_REF: ${{ github.ref }}
+          EVENT_SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          ACTOR_ID: ${{ github.actor_id }}
+        run: |
+          set -euo pipefail
+          [ "$RUN_ATTEMPT" = "1" ] || { echo "::error::run_attempt=${RUN_ATTEMPT} — environment approval does not launder a rerun; dispatch fresh"; exit 1; }
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+          [[ "$PUBLIC_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$CONTROL_SHA" =~ ^[0-9a-f]{64}$ ]] || exit 1
+          [ "$IN_TAG" = "cli-v${VERSION}" ] || exit 1
+          [ "$MODE" = "publish-or-reconcile" ] || exit 1
+          [ -n "$CORRELATION_ID" ] || exit 1
+          [ "$EVENT_REF" = "refs/tags/${IN_TAG}" ] || { echo "::error::event ref is not the immutable tag"; exit 1; }
+          [ "$EVENT_SHA" = "$PUBLIC_SHA" ] || { echo "::error::event SHA mismatch"; exit 1; }
+          [ "$TRIGGERING_ACTOR" = "$ACTOR" ] || exit 1
+          ENC_ACTOR=$(python3 -c "import urllib.parse,os; print(urllib.parse.quote(os.environ['ACTOR']))")
+          API_ID=$(gh api "users/${ENC_ACTOR}" --jq .id)
+          [ "$API_ID" = "$ACTOR_ID" ] || exit 1
+          if [ "$ACTOR" = "replylayer-release-mirror[bot]" ]; then
+            [ "$ACTOR_ID" = "294898943" ] && [ -z "$RECOVERY_REASON" ] || exit 1
+          elif [ "$ACTOR" = "mcintoshjames-sketch" ]; then
+            [ "$ACTOR_ID" = "233505925" ] && [ -n "$RECOVERY_REASON" ] || exit 1
+          else
+            echo "::error::actor not allowlisted"; exit 1
+          fi
+          echo "publish-job guards OK"
+
+      - name: API-only re-verification (tag, reachability, control plane from tag bytes)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IN_TAG: ${{ inputs.tag }}
+          PUBLIC_SHA: ${{ inputs.public_sha }}
+          CONTROL_SHA: ${{ inputs.control_plane_sha256 }}
+        run: |
+          set -euo pipefail
+          TAG_SHA=$(gh api "repos/replylayer/rly/git/ref/tags/${IN_TAG}" --jq '.object.sha')
+          [ "$TAG_SHA" = "$PUBLIC_SHA" ] || { echo "::error::tag dereferences to ${TAG_SHA}, expected ${PUBLIC_SHA}"; exit 1; }
+          STATUS=$(gh api "repos/replylayer/rly/compare/main...${PUBLIC_SHA}" --jq .status)
+          case "$STATUS" in identical|behind) ;; *) echo "::error::${PUBLIC_SHA} is not reachable from public main (compare status: ${STATUS})"; exit 1;; esac
+          # Rebuild the control-plane manifest from TAG BYTES via the git data
+          # API — no checkout, no execution of those files in this job.
+          GH_TOKEN="$GH_TOKEN" PUBLIC_SHA="$PUBLIC_SHA" CONTROL_SHA="$CONTROL_SHA" node - <<'NODE'
+          const { createHash } = require('node:crypto');
+          const { execFileSync } = require('node:child_process');
+          const api = (p) => JSON.parse(execFileSync('gh', ['api', p], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }));
+          const tree = api(`repos/replylayer/rly/git/trees/${process.env.PUBLIC_SHA}?recursive=1`);
+          if (tree.truncated) { console.error('::error::tree listing truncated'); process.exit(1); }
+          const byPath = new Map(tree.tree.filter((e) => e.type === 'blob').map((e) => [e.path, e.sha]));
+          const fixed = ['README.md', '.github/workflows/publish-npm.yml', '.github/scripts/check-readme-contract.mjs'];
+          const fixtures = [...byPath.keys()].filter((p) => p.startsWith('.github/fixtures/readme-contract/'));
+          const entries = [...fixed, ...fixtures].sort().map((rel) => {
+            const blobSha = byPath.get(rel);
+            if (!blobSha) return { path: rel, sha256: 'ABSENT' };
+            const blob = api(`repos/replylayer/rly/git/blobs/${blobSha}`);
+            const bytes = Buffer.from(blob.content, 'base64');
+            return { path: rel, sha256: createHash('sha256').update(bytes).digest('hex') };
+          });
+          if (entries.some((e) => e.sha256 === 'ABSENT')) { console.error('::error::control-plane file absent at tag'); process.exit(1); }
+          const digest = createHash('sha256').update(JSON.stringify(entries)).digest('hex');
+          if (digest !== process.env.CONTROL_SHA) {
+            console.error(`::error::control-plane digest from tag bytes ${digest} != supplied ${process.env.CONTROL_SHA}`);
+            process.exit(1);
+          }
+          console.log(`API-only control-plane OK (${digest})`);
+          NODE
+
+      - name: Download the same-run preflight artifact by exact ID
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.preflight-build.outputs.artifact_id }}
+          path: /tmp/preflight-in
+
+      - name: Verify artifact digests + manifest against inputs and preflight outputs
+        env:
+          VERSION: ${{ inputs.version }}
+          IN_TAG: ${{ inputs.tag }}
+          PUBLIC_SHA: ${{ inputs.public_sha }}
+          CORRELATION_ID: ${{ inputs.correlation_id }}
+          EXP_NAME: ${{ needs.preflight-build.outputs.tarball_name }}
+          EXP_SHA256: ${{ needs.preflight-build.outputs.tarball_sha256 }}
+          EXP_SHA512: ${{ needs.preflight-build.outputs.tarball_sha512 }}
+        run: |
+          set -euo pipefail
+          DIR=$(find /tmp/preflight-in -name preflight-manifest.json -exec dirname {} \; | head -1)
+          [ -n "$DIR" ] || { echo "::error::preflight manifest not found in the downloaded artifact"; exit 1; }
+          cd "$DIR"
+          node -e '
+            const m = require("./preflight-manifest.json");
+            const want = {
+              version: process.env.VERSION, tag: process.env.IN_TAG, public_sha: process.env.PUBLIC_SHA,
+              correlation_id: process.env.CORRELATION_ID, tarball: process.env.EXP_NAME,
+              sha256: process.env.EXP_SHA256, sha512: process.env.EXP_SHA512,
+            };
+            for (const [k, v] of Object.entries(want)) {
+              if (m[k] !== v) { console.error(`::error::manifest ${k} "${m[k]}" != expected "${v}"`); process.exit(1); }
+            }
+          '
+          ACT_SHA256=$(sha256sum "$EXP_NAME" | cut -d' ' -f1)
+          ACT_SHA512="sha512-$(openssl dgst -sha512 -binary "$EXP_NAME" | openssl base64 -A)"
+          [ "$ACT_SHA256" = "$EXP_SHA256" ] || { echo "::error::tarball sha256 mismatch after artifact transfer"; exit 1; }
+          [ "$ACT_SHA512" = "$EXP_SHA512" ] || { echo "::error::tarball sha512 mismatch after artifact transfer"; exit 1; }
+          echo "TARBALL_DIR=$DIR" >> "$GITHUB_ENV"
+          echo "artifact verified (${EXP_NAME} ${ACT_SHA256})"
+
+      - name: Set up Node 24 + assert toolchain + isolated auth-free npm config
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+
+      - name: Assert no token credentials can exist in this job
+        env:
+          NPM_TOKEN_PROBE: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          [ -z "${NPM_TOKEN_PROBE:-}" ] || { echo "::error::an NPM_TOKEN secret is reachable from this repository — Trusted Publishing must be the only path; remove it"; exit 1; }
+          [ -z "${NODE_AUTH_TOKEN:-}" ] || { echo "::error::NODE_AUTH_TOKEN is set"; exit 1; }
+          NPM_V=$(npm --version)
+          node -e '
+            const [a, b, c] = process.argv[1].split(".").map(Number);
+            const ok = a > 11 || (a === 11 && (b > 5 || (b === 5 && c >= 1)));
+            if (!ok) { console.error(`::error::bundled npm ${process.argv[1]} < 11.5.1`); process.exit(1); }
+          ' "$NPM_V"
+          ISOLATED="$RUNNER_TEMP/npmrc-isolated"
+          printf 'registry=https://registry.npmjs.org/\n' > "$ISOLATED"
+          echo "NPM_CONFIG_USERCONFIG=$ISOLATED" >> "$GITHUB_ENV"
+          for f in "$HOME/.npmrc" "$ISOLATED"; do
+            if [ -f "$f" ] && grep -qE '_authToken|NODE_AUTH_TOKEN' "$f"; then
+              echo "::error::auth material found in $f"; exit 1
+            fi
+          done
+          echo "toolchain + isolated config OK (npm ${NPM_V})"
+
+      - name: Probe registry, then publish the inspected tarball (or reconcile)
+        env:
+          VERSION: ${{ inputs.version }}
+          EXP_NAME: ${{ needs.preflight-build.outputs.tarball_name }}
+          EXP_SHA256: ${{ needs.preflight-build.outputs.tarball_sha256 }}
+          EXP_SHA512: ${{ needs.preflight-build.outputs.tarball_sha512 }}
+          PUBLIC_SHA: ${{ inputs.public_sha }}
+        run: |
+          set -euo pipefail
+          cd "$TARBALL_DIR"
+          probe() { curl -s -o /tmp/probe.json -w '%{http_code}' "https://registry.npmjs.org/rly/${VERSION}"; }
+          reconcile() {
+            REG_INTEGRITY=$(node -e 'console.log(require("/tmp/probe.json").dist.integrity)')
+            [ "$REG_INTEGRITY" = "$EXP_SHA512" ] || { echo "::error::registry integrity ${REG_INTEGRITY} != expected ${EXP_SHA512} — rly@${VERSION} is live with DIFFERENT bytes; stop and cut a patch"; exit 1; }
+            TARBALL_URL=$(node -e 'console.log(require("/tmp/probe.json").dist.tarball)')
+            curl -fsSL "$TARBALL_URL" -o /tmp/registry.tgz
+            REG_SHA256=$(sha256sum /tmp/registry.tgz | cut -d' ' -f1)
+            [ "$REG_SHA256" = "$EXP_SHA256" ] || { echo "::error::registry tarball bytes differ"; exit 1; }
+            echo "reconcile OK: rly@${VERSION} already live and byte-identical (idempotent success)"
+          }
+          CODE=$(probe)
+          case "$CODE" in
+            404) ;;
+            200) reconcile; exit 0 ;;
+            *) echo "::error::registry probe returned HTTP ${CODE} — ambiguous state is a hard failure, never treated as absent"; exit 1 ;;
+          esac
+          echo "publishing rly@${VERSION} from ${EXP_NAME} (OIDC)"
+          set +e
+          npm publish "./${EXP_NAME}" --access public --ignore-scripts
+          PUB=$?
+          set -e
+          CODE=$(probe)
+          if [ "$PUB" -ne 0 ]; then
+            if [ "$CODE" = "200" ]; then
+              echo "::warning::npm publish exited ${PUB} but the version is now live — verifying exact bytes"
+              reconcile
+            elif [ "$CODE" = "404" ]; then
+              echo "::error::npm publish failed and rly@${VERSION} is absent — retryable with a FRESH dispatch"; exit 1
+            else
+              echo "::error::npm publish failed and the registry probe is ambiguous (HTTP ${CODE})"; exit 1
+            fi
+          else
+            [ "$CODE" = "200" ] || { echo "::error::publish reported success but the version is not yet visible (HTTP ${CODE})"; exit 1; }
+            reconcile
+          fi
+
+  post-publish-verify:
+    needs: [preflight-build, publish-or-reconcile]
+    if: inputs.dry_run == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: none
+    steps:
+      - name: "Repeat guards (attempt, actor, inputs)"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+          IN_TAG: ${{ inputs.tag }}
+          PUBLIC_SHA: ${{ inputs.public_sha }}
+          CORRELATION_ID: ${{ inputs.correlation_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          EVENT_REF: ${{ github.ref }}
+          EVENT_SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          ACTOR_ID: ${{ github.actor_id }}
+        run: |
+          set -euo pipefail
+          [ "$RUN_ATTEMPT" = "1" ] || { echo "::error::rerun detected — a failed post-verify is recovered only by a fresh full dispatch"; exit 1; }
+          [ "$EVENT_REF" = "refs/tags/${IN_TAG}" ] && [ "$EVENT_SHA" = "$PUBLIC_SHA" ] || { echo "::error::event context mismatch"; exit 1; }
+          [ "$TRIGGERING_ACTOR" = "$ACTOR" ] || exit 1
+          ENC_ACTOR=$(python3 -c "import urllib.parse,os; print(urllib.parse.quote(os.environ['ACTOR']))")
+          API_ID=$(gh api "users/${ENC_ACTOR}" --jq .id)
+          [ "$API_ID" = "$ACTOR_ID" ] || exit 1
+          case "$ACTOR" in
+            "replylayer-release-mirror[bot]") [ "$ACTOR_ID" = "294898943" ] || exit 1 ;;
+            "mcintoshjames-sketch") [ "$ACTOR_ID" = "233505925" ] || exit 1 ;;
+            *) echo "::error::actor not allowlisted"; exit 1 ;;
+          esac
+          [ -n "$CORRELATION_ID" ] || exit 1
+          echo "post-verify guards OK"
+
+      - name: Set up Node 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+
+      - name: Registry bytes match the inspected tarball
+        env:
+          VERSION: ${{ inputs.version }}
+          EXP_SHA256: ${{ needs.preflight-build.outputs.tarball_sha256 }}
+          EXP_SHA512: ${{ needs.preflight-build.outputs.tarball_sha512 }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 20); do
+            CODE=$(curl -s -o /tmp/meta.json -w '%{http_code}' "https://registry.npmjs.org/rly/${VERSION}")
+            [ "$CODE" = "200" ] && break
+            sleep 15
+          done
+          [ "$CODE" = "200" ] || { echo "::error::rly@${VERSION} not visible after bounded polling"; exit 1; }
+          INTEGRITY=$(node -e 'console.log(require("/tmp/meta.json").dist.integrity)')
+          [ "$INTEGRITY" = "$EXP_SHA512" ] || { echo "::error::registry integrity mismatch"; exit 1; }
+          curl -fsSL "$(node -e 'console.log(require("/tmp/meta.json").dist.tarball)')" -o /tmp/registry.tgz
+          [ "$(sha256sum /tmp/registry.tgz | cut -d' ' -f1)" = "$EXP_SHA256" ] || { echo "::error::registry tarball sha256 mismatch"; exit 1; }
+          echo "registry bytes OK"
+
+      - name: Clean install from the registry; both aliases; signatures; latest tag
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          PREFIX="$RUNNER_TEMP/verify-prefix"; mkdir -p "$PREFIX"
+          npm install -g --prefix "$PREFIX" "rly@${VERSION}"
+          [ "$("$PREFIX/bin/rly" --version)" = "$VERSION" ] || { echo "::error::rly alias version mismatch"; exit 1; }
+          [ "$("$PREFIX/bin/replylayer" --version)" = "$VERSION" ] || { echo "::error::replylayer alias version mismatch"; exit 1; }
+          SMOKE="$RUNNER_TEMP/sig-smoke"; mkdir -p "$SMOKE"; cd "$SMOKE"
+          npm init -y >/dev/null
+          npm install "rly@${VERSION}" --no-audit --no-fund >/dev/null
+          npm audit signatures
+          LATEST=$(npm view rly dist-tags.latest)
+          [ "$LATEST" = "$VERSION" ] || { echo "::error::dist-tag latest is ${LATEST}, expected ${VERSION}"; exit 1; }
+          echo "aliases + signatures + latest OK"
+
+      - name: Provenance names this repo, this workflow, and the release commit
+        env:
+          VERSION: ${{ inputs.version }}
+          IN_TAG: ${{ inputs.tag }}
+          PUBLIC_SHA: ${{ inputs.public_sha }}
+          EXP_SHA512: ${{ needs.preflight-build.outputs.tarball_sha512 }}
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://registry.npmjs.org/-/npm/v1/attestations/rly@${VERSION}" -o /tmp/attestations.json
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const att = JSON.parse(fs.readFileSync('/tmp/attestations.json', 'utf8'));
+          const prov = (att.attestations ?? []).find((a) => (a.predicateType ?? '').includes('slsa-provenance') || (a.predicateType ?? '').includes('provenance'));
+          if (!prov) { console.error('::error::no provenance attestation on the registry'); process.exit(1); }
+          const payload = JSON.parse(Buffer.from(prov.bundle.dsseEnvelope.payload, 'base64').toString('utf8'));
+          const text = JSON.stringify(payload);
+          const fail = (m) => { console.error('::error::' + m); process.exitCode = 1; };
+          if (!text.includes('replylayer/rly')) fail('provenance does not name replylayer/rly');
+          if (!text.includes('.github/workflows/publish-npm.yml')) fail('provenance does not name the direct publish workflow');
+          if (!text.includes(process.env.PUBLIC_SHA)) fail(`provenance does not name the release commit ${process.env.PUBLIC_SHA}`);
+          if (!text.includes(`refs/tags/${process.env.IN_TAG}`)) fail('provenance does not name the immutable tag ref');
+          const subj = payload.subject?.[0];
+          const b64 = subj?.digest?.sha512 ? 'sha512-' + Buffer.from(subj.digest.sha512, 'hex').toString('base64') : null;
+          if (b64 && b64 !== process.env.EXP_SHA512) fail(`provenance subject integrity ${b64} != expected`);
+          if (process.exitCode) process.exit(process.exitCode);
+          console.log('provenance OK: replylayer/rly + publish-npm.yml + ' + process.env.PUBLIC_SHA);
+          NODE
