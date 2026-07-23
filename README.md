@@ -228,7 +228,17 @@ Please report security issues privately to `security@replylayer.ai`.
 
 ## Source
 
-This repository is a public install and package-trust surface for ReplyLayer's CLI. The main product source is maintained separately, and a standalone public CLI source checkout is not yet available here. Install the JavaScript CLI with npm on Node.js 22+, or use the bundled PyPI wheel with pipx on a supported platform.
+This repository contains the CLI source (`src/` with its manifest, lockfile,
+and build config). From `cli-v0.7.13` onward, each release tag identifies the
+exact commit the published npm package was built and attested from — see the
+*From source* section of [`CLI_GUIDE.md`](./CLI_GUIDE.md) for build
+instructions (Node.js 22+). `main` may briefly carry the next prepared,
+unreleased version between a source merge and its stable publication; use the
+immutable `cli-vX.Y.Z` tags for released source. Tags before `cli-v0.7.13`
+predate source publication and do not contain the CLI source. Public source
+covers the JavaScript npm package only — native binaries in the PyPI wheels
+and the winget package remain privately built and are verified via the signed
+checksums above, not by this source tree.
 
 ## `langchain-python/` — LangChain adapter source mirror
 
