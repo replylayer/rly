@@ -1,0 +1,255 @@
+name: cli source ci
+
+# Public control plane for the CLI source cutover. The single stable job
+# `public-repo-ci` is the aggregator every PR must turn green; it is the ONLY
+# name intended to become a required status check.
+#
+# Two modes, detected from the repository state — deliberately NO workflow-level
+# `paths` filter, so every PR (including langchain-python-only PRs) produces a
+# terminal `public-repo-ci` result:
+#
+#   pre-seed  — `.rly-source.json` and `package.json` are both absent: the CLI
+#               source tree has not been published yet. Docs/control-plane
+#               checks only. Any PARTIAL managed package tree fails.
+#   seeded    — both files present: the full cross-platform source-build matrix
+#               plus tree-hygiene checks are required. Once seeded, pre-seed
+#               mode is permanently invalid.
+#
+# All actions are pinned to full commit SHAs. The secret scan uses a pinned
+# gitleaks release binary verified by SHA-256 (no third-party action).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cli-source-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  state:
+    name: repository state
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      mode: ${{ steps.detect.outputs.mode }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+          have_meta=0; have_pkg=0
+          [ -f .rly-source.json ] && have_meta=1
+          [ -f package.json ] && have_pkg=1
+          if [ "$have_meta" = 1 ] && [ "$have_pkg" = 1 ]; then
+            echo "mode=seeded" >> "$GITHUB_OUTPUT"
+            echo "repository state: seeded (full package matrix required)"
+            exit 0
+          fi
+          if [ "$have_meta" = 1 ] || [ "$have_pkg" = 1 ]; then
+            echo "::error::partial managed package tree — .rly-source.json and package.json must appear together (a sync landed half a package)"
+            exit 1
+          fi
+          # Pre-seed: every package-indicating managed path must be absent.
+          # (CLI_GUIDE.md and LICENSE legitimately predate the source tree.)
+          for p in package-lock.json tsconfig.json src .nvmrc; do
+            if [ -e "$p" ]; then
+              echo "::error::pre-seed mode but managed package path '$p' exists — partial package tree"
+              exit 1
+            fi
+          done
+          echo "mode=pre-seed" >> "$GITHUB_OUTPUT"
+          echo "repository state: pre-seed (docs/control-plane checks only)"
+
+  docs:
+    name: readme contract + fixtures
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+      - name: Fixture self-test (shared with the canonical upstream checker)
+        run: node .github/scripts/check-readme-contract.mjs --fixtures .github/fixtures/readme-contract
+      - name: Root README carries the consumer/trust contract
+        run: node .github/scripts/check-readme-contract.mjs README.md
+
+  package:
+    name: source build (${{ matrix.label }})
+    needs: state
+    if: needs.state.outputs.mode == 'seeded'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    continue-on-error: ${{ matrix.advisory }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: ubuntu-node22-minimum, os: ubuntu-latest, node: 22.0.0, lane: minimum, advisory: false }
+          - { label: ubuntu-node22, os: ubuntu-latest, node: 22, lane: full, advisory: false }
+          - { label: macos-node22, os: macos-latest, node: 22, lane: full, advisory: false }
+          - { label: windows-node22, os: windows-latest, node: 22, lane: full, advisory: false }
+          # Forward-compatibility lane: advisory until it has a green history,
+          # then flip advisory -> false in a reviewed PR.
+          - { label: ubuntu-node-current, os: ubuntu-latest, node: latest, lane: minimum, advisory: true }
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Package metadata contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e '
+            const p = require("./package.json");
+            const fail = (m) => { console.error("::error::" + m); process.exitCode = 1; };
+            if (p.name !== "rly") fail(`name must be rly, got ${p.name}`);
+            if (!/^\d+\.\d+\.\d+$/.test(p.version)) fail(`version must be stable semver, got ${p.version}`);
+            if (p.engines?.node !== ">=22") fail(`engines.node must be >=22, got ${p.engines?.node}`);
+            const bins = Object.keys(p.bin ?? {}).sort();
+            if (bins.join(",") !== "replylayer,rly") fail(`bin must expose exactly both aliases, got ${bins}`);
+            if (p.repository?.url !== "git+https://github.com/replylayer/rly.git") fail(`repository must be the public repo, got ${p.repository?.url}`);
+            const meta = require("./.rly-source.json");
+            if (meta.version !== p.version) fail(`.rly-source.json version ${meta.version} != package.json ${p.version}`);
+          '
+      - name: npm ci + typecheck + build (lockfile-exact)
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run typecheck
+          npm run build
+          node -e 'require("node:fs").accessSync("dist/bin/replylayer.js")'
+      - name: Pack inventory + README byte-identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pack --json > pack.json
+          node -e '
+            const files = require("./pack.json")[0].files.map((f) => f.path);
+            const ok = (p) => /^dist\//.test(p) || ["package.json", "README.md", "LICENSE", "CLI_GUIDE.md"].includes(p);
+            const bad = files.filter((f) => !ok(f));
+            if (bad.length) { console.error("::error::unexpected files in the npm tarball: " + bad.join(", ")); process.exit(1); }
+          '
+          TARBALL="$(node -e 'console.log(require("./pack.json")[0].filename)')"
+          mkdir -p "$RUNNER_TEMP/pack" && tar -xzf "$TARBALL" -C "$RUNNER_TEMP/pack"
+          if ! cmp -s README.md "$RUNNER_TEMP/pack/package/README.md"; then
+            echo "::error::the README packed into the npm tarball differs from the repository root README"
+            exit 1
+          fi
+      - name: Smoke-install the tarball; both aliases run
+        if: matrix.lane == 'full'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARBALL="$(node -e 'console.log(require("./pack.json")[0].filename)')"
+          PREFIX="$RUNNER_TEMP/npm-prefix"; mkdir -p "$PREFIX"
+          npm install -g --prefix "$PREFIX" "./$TARBALL"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            "$PREFIX/rly.cmd" --version
+            "$PREFIX/replylayer.cmd" --version
+          else
+            "$PREFIX/bin/rly" --version
+            "$PREFIX/bin/replylayer" --version
+          fi
+      - name: Documented clean `npm install` leaves the lockfile byte-identical
+        if: matrix.lane == 'full'
+        shell: bash
+        run: |
+          set -euo pipefail
+          CLEAN="$RUNNER_TEMP/clean-install"
+          mkdir -p "$CLEAN"
+          git archive HEAD | tar -x -C "$CLEAN"
+          cd "$CLEAN"
+          BEFORE="$(node -e 'const c=require("node:crypto"),f=require("node:fs");console.log(c.createHash("sha256").update(f.readFileSync("package-lock.json")).digest("hex"))')"
+          npm install
+          AFTER="$(node -e 'const c=require("node:crypto"),f=require("node:fs");console.log(c.createHash("sha256").update(f.readFileSync("package-lock.json")).digest("hex"))')"
+          if [ "$BEFORE" != "$AFTER" ]; then
+            echo "::error::npm install rewrote package-lock.json — the committed lock does not satisfy a fresh resolution"
+            exit 1
+          fi
+          npm run build
+          node -e 'require("node:fs").accessSync("dist/bin/replylayer.js")'
+
+  hygiene:
+    name: tree hygiene + secret scan
+    needs: state
+    if: needs.state.outputs.mode == 'seeded'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: No symlinks, gitlinks, or executable modes in managed paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          MANAGED='^(\.nvmrc|\.rly-source\.json|CLI_GUIDE\.md|LICENSE|package\.json|package-lock\.json|tsconfig\.json|src/)'
+          BAD="$(git ls-files -s | awk -v re="$MANAGED" '$1 ~ /^(120000|160000|100755)$/ { if ($4 ~ re) print $1" "$4 }')"
+          if [ -n "$BAD" ]; then
+            printf '%s\n' "$BAD"
+            echo "::error::symlink/gitlink/executable-mode entries are not allowed in managed source paths"
+            exit 1
+          fi
+          echo "OK: managed paths carry only regular non-executable files"
+      - name: No binary (NUL-containing) files in managed paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e '
+            const { execSync } = require("node:child_process");
+            const { readFileSync } = require("node:fs");
+            const managed = /^(\.nvmrc|\.rly-source\.json|CLI_GUIDE\.md|LICENSE|package\.json|package-lock\.json|tsconfig\.json|src\/)/;
+            const files = execSync("git ls-files", { encoding: "utf8" }).split("\n").filter((f) => managed.test(f));
+            const bad = files.filter((f) => readFileSync(f).includes(0));
+            if (bad.length) { console.error("::error::NUL-containing files in managed paths: " + bad.join(", ")); process.exit(1); }
+            console.log(`OK: ${files.length} managed files are NUL-free text`);
+          '
+      - name: Secret scan (pinned gitleaks release, checksum-verified)
+        shell: bash
+        run: |
+          set -euo pipefail
+          V=8.30.1
+          SHA=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          curl -fsSLO "https://github.com/gitleaks/gitleaks/releases/download/v${V}/gitleaks_${V}_linux_x64.tar.gz"
+          echo "${SHA}  gitleaks_${V}_linux_x64.tar.gz" | sha256sum -c -
+          tar -xzf "gitleaks_${V}_linux_x64.tar.gz" gitleaks
+          ./gitleaks detect --source . --no-git --redact --exit-code 1
+
+  # The single stable required-check name. Fails unless every applicable
+  # prerequisite succeeded for the detected mode. `if: always()` so a LangChain
+  # -only PR in pre-seed mode still gets a terminal result.
+  public-repo-ci:
+    name: public-repo-ci
+    needs: [state, docs, package, hygiene]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - shell: bash
+        env:
+          STATE_RESULT: ${{ needs.state.result }}
+          MODE: ${{ needs.state.outputs.mode }}
+          DOCS_RESULT: ${{ needs.docs.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+          HYGIENE_RESULT: ${{ needs.hygiene.result }}
+        run: |
+          set -uo pipefail
+          fail=0
+          [ "$STATE_RESULT" = "success" ] || { echo "::error::state: $STATE_RESULT"; fail=1; }
+          [ "$DOCS_RESULT" = "success" ] || { echo "::error::docs: $DOCS_RESULT"; fail=1; }
+          if [ "${MODE:-}" = "seeded" ]; then
+            [ "$PACKAGE_RESULT" = "success" ] || { echo "::error::package matrix: $PACKAGE_RESULT"; fail=1; }
+            [ "$HYGIENE_RESULT" = "success" ] || { echo "::error::hygiene: $HYGIENE_RESULT"; fail=1; }
+          else
+            [ "$PACKAGE_RESULT" = "skipped" ] || { echo "::error::package matrix must not run pre-seed (got $PACKAGE_RESULT)"; fail=1; }
+            [ "$HYGIENE_RESULT" = "skipped" ] || { echo "::error::hygiene must not run pre-seed (got $HYGIENE_RESULT)"; fail=1; }
+          fi
+          [ "$fail" = 0 ] && echo "public-repo-ci: all applicable checks green (mode: ${MODE:-unknown})"
+          exit "$fail"

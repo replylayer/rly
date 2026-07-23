@@ -1,0 +1,13 @@
+# Scanner config for the pinned gitleaks run in cli-source-ci.yml.
+# Extends the default ruleset; the allowlist below covers ONLY the documented
+# example credential used across the README / CLI guide — it is not a real key.
+# Any broadening of this allowlist is a publishing-control change (CODEOWNED).
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Documented example credentials — deliberately fake"
+regexes = [
+  '''rly_live_k3m9p2qx7vn4hjd0\.uZ8Qb1vK3mN0pR7sT2wX9yA4cF6gH8jL1nP3rT5vW7z''',
+]

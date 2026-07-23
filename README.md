@@ -1,8 +1,12 @@
 # rly
 
-`rly` is the ReplyLayer command-line interface.
+The command-line interface for **ReplyLayer** — safe email for AI agents. Send,
+receive, reply to, and security-scan transactional and operational email from
+the terminal or from an agent loop. Not a bulk or marketing tool.
 
 ReplyLayer provides safe email infrastructure for AI agents: mailboxes, sending, inbox workflows, scanning, quarantine, and approval flows designed for automated systems.
+
+Command names: `rly` and `replylayer` (identical) — examples below use the shorter `rly`.
 
 ## Install
 
@@ -88,6 +92,88 @@ pipx uninstall rly
 
 `rly --version` reports the version of whichever executable actually ran —
 compare it against the channel you expect before filing an issue.
+
+## Quickstart
+
+```bash
+export REPLYLAYER_API_KEY=rly_live_k3m9p2qx7vn4hjd0.uZ8Qb1vK3mN0pR7sT2wX9yA4cF6gH8jL1nP3rT5vW7z  # from app.replylayer.ai
+rly doctor --json                                # confirm auth + connectivity (ok: true)
+rly send --from <mailbox> --to delivered@simulator.replylayer.net \
+  --subject "hello" --body "first send" --json
+# → branch on the JSON `status`: sent | quarantined | blocked | pending_review
+```
+
+`delivered@simulator.replylayer.net` (ReplyLayer's own first-party simulator) is the
+zero-setup first-send target — the send is accepted immediately and a genuine
+`message.delivered` webhook fires a few seconds later. The send flag is
+`--from <mailbox>` (mailbox name or ID). See "Simulator" below for the full scenario
+list and `rly simulate inbound` (synthetic inbound testing).
+
+## Auth
+
+A single API key. `REPLYLAYER_API_KEY` (env var, wins over stored creds), or
+`rly auth login`, or `--api-key`. Production (`https://api.replylayer.ai`) is the
+default endpoint — set nothing else. `REPLYLAYER_API_URL` is a testing-only override.
+
+A new key is **inert** on protected product routes until a human completes both
+signup checks: the emailed 6-digit code (`rly auth verify --code <code>`) and the
+6-digit SMS code (`rly auth verify-phone --code <code>`). `EMAIL_NOT_VERIFIED` or
+`PHONE_NOT_VERIFIED` means that bootstrap is incomplete. If the SMS was not sent,
+run `rly auth resend-phone`; before verification, add `--phone +<country-code>...`
+to correct a typo and resend.
+
+## For agents: `--json` and exit codes
+
+Every command supports the global `--json` flag for machine-readable output (errors go
+to stderr as a single JSON object with a stable `code`).
+
+**Branch on the JSON `status`, not the exit code.** A scanner block is exit `0` with
+`status: "blocked"` (the message was created and a policy decision recorded). A
+gate-reject (rate limit, allowlist, undeliverable recipient, draft rescan-reject) is
+exit `1` with a stable `code` and no message created.
+
+| Exit | Meaning |
+|------|---------|
+| `0` | The request produced a message — read the JSON `status` (`sent` / `quarantined` / `blocked` / `pending_review`). |
+| `1` | Remote / API / runtime failure, including every gate-reject — discriminate on the JSON `code`. |
+| `2` | Local usage / configuration error (bad flags). |
+| `3` | Auth required / invalid. Defaults to exit `1`; set `REPLYLAYER_AUTH_EXIT_CODE=1` to receive this distinct code. |
+| `130` | Interrupted, or an interactive confirmation aborted (`USER_ABORTED`). |
+
+`send`/`reply` with `--strict` add three outcome codes: `4` (blocked, terminal), `5` (infrastructure hold, retryable), and `6` (unrecognized outcome, fail-closed). Without `--strict` a non-delivered outcome stays exit `0`.
+
+This table is the agent-facing exit-code contract; the full command reference is in the bundled `CLI_GUIDE.md`.
+
+A typical agent monitoring loop anchors a `--since` cursor so it waits for the next
+arrival instead of reprocessing the backlog (reading does NOT mark a message read):
+
+```bash
+SINCE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+MSG=$(rly --json inbox wait --mailbox support-bot --since "$SINCE" --timeout 30)
+# exit 0 with .message=null means "polled cleanly, nothing arrived" — not an error.
+```
+
+## Simulator
+
+Test send, provider-style outcomes, webhook signatures, and inbound receive/quarantine
+without a real recipient or another provider's simulator:
+
+```bash
+rly send --from <mailbox> --to bounced@simulator.replylayer.net --subject hi --body hi
+rly simulate inbound --mailbox <mailbox> --scenario clean
+rly simulate inbound --mailbox <mailbox> --scenario prompt_injection_quarantined
+rly webhook test <id> --event message.delivered
+```
+
+Outbound scenarios: `delivered@`, `bounced@`, `complained@`, `suppressed@` at
+`simulator.replylayer.net` (append `+label` for your own correlation, e.g.
+`delivered+run-1@simulator.replylayer.net`). `complained@`/`suppressed@` prove webhook
+delivery only — no real suppression row is written. One Sandbox account can run all
+four scenarios in the same day; the exact simulator addresses bypass the
+recipient-domain cap but still consume daily and cumulative send allowances. Full
+detail is in `CLI_GUIDE.md`;
+the canonical outcome, accounting, and inbound-response contract is the
+[email simulator guide](https://replylayer.ai/docs/guides/simulator).
 
 ## Package Links
 

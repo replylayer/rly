@@ -1,0 +1,14 @@
+# Dependabot is a SIGNAL, not a second source of truth, for this repository.
+# The root npm manifest + lockfile are generated from a canonical upstream:
+# never merge a Dependabot PR into the managed paths. Apply the accepted update
+# upstream (manifest + lock template), let its checks run, and let the next
+# managed source sync supersede or close the Dependabot PR here.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
