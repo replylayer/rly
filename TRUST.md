@@ -32,9 +32,11 @@ repository — not public keyservers.
 
 ## Source status
 
-A standalone public CLI source checkout is **not yet available** in this
-repository; it currently provides installation and package-trust material. When
-source-backed releases begin, each release tag will identify the exact public
-source commit for the published npm package, and this page will say so
-explicitly. Historical tags from the docs-only era do not contain CLI source
-and are never retroactively described as source-backed.
+From `cli-v0.7.13` onward this repository contains the CLI source, and each
+release tag identifies the exact public commit the published npm package was
+built and attested from — the registry's provenance attestation names this
+repository, the direct publish workflow, and that commit. Historical tags from
+the docs-only era do not contain CLI source and are never retroactively
+described as source-backed. Native binaries (the PyPI wheels and the winget
+executable) remain privately built; their trust anchors are unchanged — the
+GPG-signed checksum manifest, platform signatures/notarization, and SBOMs.
