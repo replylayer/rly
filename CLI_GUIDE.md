@@ -39,6 +39,47 @@ hatch runs the npm package instead, which needs Node 22+ on the host.
 
 On Debian and Ubuntu systems that enforce PEP 668, plain `pip install rly` may fail with `externally-managed-environment`. Use `pipx install rly` for a global CLI install, or run `pip install rly` inside a virtual environment.
 
+### winget (Windows x64)
+
+```powershell
+winget install --id ReplyLayer.CLI -e
+rly --help
+```
+
+Installs the same signed native binary as a portable package — no Node or Python
+toolchain needed. **Windows x64 only** (there is no arm64 package), and it exposes
+the `rly` command alone, not the `replylayer` alias. Because submitting to the
+winget community source is a manual step in the release process, this package can
+trail the newest npm/PyPI release — sometimes by more than one version. `npm i -g
+rly` is always the first channel to carry a new release.
+
+To update or remove:
+
+```powershell
+winget upgrade --id ReplyLayer.CLI -e
+winget uninstall --id ReplyLayer.CLI -e
+```
+
+### Install-channel collisions
+
+npm, pipx, and winget can each put an `rly` on your `PATH`. Your shell runs
+whichever comes first, so a fresh `winget install` can look like it did nothing or
+installed an old version when an earlier npm or pipx install is actually winning.
+
+Keep one global install channel active at a time. To see which executable is live,
+run `Get-Command rly -All` in Windows PowerShell (bare `where` is an alias for
+`Where-Object` there — use `where.exe rly` if you prefer that form) or
+`which -a rly` on macOS/Linux, then remove the channels you are not using:
+
+```powershell
+winget uninstall --id ReplyLayer.CLI -e
+npm uninstall -g rly
+pipx uninstall rly
+```
+
+`rly --version` reports the version of whichever executable actually ran — compare
+it against the channel you expect before filing a bug.
+
 ### pnpm
 
 ```bash
@@ -47,11 +88,22 @@ pnpm add -g rly
 
 ### From source
 
-A standalone public source checkout is **not yet available**. This repository
-currently provides installation and package-trust material (signed checksums,
-GPG key, SBOMs, release verification) — not the CLI source tree. Until the
-source is published here, install the JavaScript CLI with npm on Node.js 22+,
-or use the bundled PyPI wheel with pipx on a supported platform.
+The CLI source is published at <https://github.com/replylayer/rly>.
+Building requires Node.js 22 or later:
+
+```bash
+git clone https://github.com/replylayer/rly.git
+cd rly
+npm install
+npm run build
+npm link
+rly --version
+```
+
+For a lockfile-exact dependency install, use `npm ci` instead of `npm install`.
+The npm installation also requires Node.js 22 or later. On supported platforms,
+`pipx install rly` installs a bundled native executable requiring Python 3.10+
+but no Node toolchain.
 
 ## Authentication
 
@@ -87,14 +139,17 @@ rly auth status
 
 ```bash
 # Create an account at public launch (mint a CLI signup code from the dashboard first)
-rly signup --email you@example.com --accept-terms --accept-web-risk \
+rly signup --email you@example.com --phone +13125550123 --accept-terms \
   --cli-signup-code rls_cli_<code>
 
 # During invite-only period, use --invite-code instead
-rly signup --email you@example.com --accept-terms --accept-web-risk --invite-code <code>
+rly signup --email you@example.com --phone +13125550123 --accept-terms --invite-code <code>
 
 # Verify your email (check inbox for 6-digit code)
 rly auth verify --code 482917
+
+# Verify your mobile number (check SMS for 6-digit code)
+rly auth verify-phone --code 593104
 
 # Create a mailbox
 rly mailbox create support-bot
@@ -125,11 +180,11 @@ rly inbox wait --mailbox support-bot --timeout 30
 
 ```bash
 # Public launch — dashboard-issued code creates a SEPARATE new account
-rly signup --email you@example.com --accept-terms --accept-web-risk \
+rly signup --email you@example.com --phone +13125550123 --accept-terms \
   --cli-signup-code rls_cli_<code>
 
 # Invite-only environments — operator-issued invite code
-rly signup --email you@example.com --accept-terms --accept-web-risk --invite-code <code>
+rly signup --email you@example.com --phone +13125550123 --accept-terms --invite-code <code>
 
 rly account usage                                   # Usage + tier limits (admin key)
 rly account quota                                   # Send-budget preflight: daily cap, sends remaining, reset time (works with agent keys)
@@ -145,7 +200,9 @@ rly account delete --confirm                        # Skip confirmation prompt
 
 `account quota` is the canonical send-budget preflight for an agent loop — unlike `account usage` (admin key only), it works with an agent-scoped key.
 
-`account link-scanning` controls malicious link scanning — inbound links checked against Google Web Risk (only SHA-256 hash-prefixes are sent; full URLs never leave the platform). `status` works with any key; `enable` is an admin action (it turns on an account-wide sub-processor data flow) and **requires `--accept`** — without it the command prints the disclosure and exits non-zero (`LINK_SCANNING_ACCEPT_REQUIRED`) without changing anything. In `--json` mode the disclosure free-text is suppressed (JSON-safe) and `--accept` is still required. If your account's accepted privacy policy predates this feature, re-accept the current Privacy Policy in the dashboard first.
+`account export` authenticates with an API key, so it always returns the **redacted** export — `phone_number` and any pending phone numbers are masked. It is not the complete GDPR portability artifact; that's the session-authenticated download from the dashboard (Settings → Data portability → "Download account data"), which includes the raw phone number for the human account owner.
+
+`account link-scanning` controls malicious link scanning — inbound links checked against Google Web Risk (only SHA-256 hash-prefixes are sent; full URLs never leave the platform). **New accounts have it enabled by default** — activation is disclosure-based under Privacy Policy §7a, presented at signup; `rly signup` prints the notice, and passing `--accept-web-risk` additionally records an explicit acknowledgement. Turn it off per mailbox via the mailbox scanner policy (`disabled_scanners: ["url-reputation"]`). `status` works with any key; `enable` exists for older accounts that predate default-on (it turns on an account-wide sub-processor data flow) and **requires `--accept`** — without it the command prints the disclosure and exits non-zero (`LINK_SCANNING_ACCEPT_REQUIRED`) without changing anything. In `--json` mode the disclosure free-text is suppressed (JSON-safe) and `--accept` is still required. If your account's acknowledged privacy policy predates this feature, review and acknowledge the current Privacy Policy in the dashboard first.
 
 ### Authentication
 
@@ -156,18 +213,42 @@ rly auth rotate      # Rotate API key (revokes current)
 rly auth status      # Show auth status
 rly auth verify --code <code>   # Verify email with 6-digit code
 rly auth resend --email <email> # Resend verification code
+rly auth verify-phone --code <code> # Verify signup phone with 6-digit SMS code
+rly auth resend-phone               # Resend SMS code to the pending number
+rly auth resend-phone --phone +13125550124 # Correct an unverified number and resend
 ```
 
 **Email verification notes:** Verification codes are valid for **10 minutes**. If you did not receive the email, first check your spam folder — then use `auth resend` to request a new code. Resends are rate-limited to **3 per hour per IP address**. If your current code has not yet expired you will get the same success response without a new email being sent; this is by design (anti-abuse). If `auth verify` reports `VERIFICATION_CODE_EXPIRED`, run `auth resend` to get a fresh code.
+
+**Phone verification notes:** Every new account needs a mobile number with country code. SMS codes are valid for **5 minutes**, and only the newest challenge is accepted. Use `auth resend-phone` after the 30-second cooldown if no SMS arrives. The command reports only the masked destination. Before verification, `--phone` corrects a typo and sends a new challenge; it cannot replace an already-verified number. On `PHONE_VERIFICATION_RATE_LIMITED`, wait for the API's `Retry-After` interval.
 
 ### Mailboxes
 
 ```bash
 rly mailbox create support-bot      # Create a mailbox
-rly mailbox list                    # List all mailboxes
+rly mailbox create support-bot --display-name "Acme Support"  # Set the From display name at create
+rly mailbox list                    # List all mailboxes (shows a "SENDS AS" column)
+rly mailbox show support-bot        # Mailbox detail, including display_name + sends_as
 rly mailbox delete support-bot      # Soft-delete a mailbox
 rly mailbox delete support-bot -y   # Skip confirmation
 ```
+
+**Display name (recipient-visible From).** A mailbox's recipient-visible From line
+defaults to its `name`. Set a friendlier one with `--display-name`; it never changes
+the addressing key (`name`), only what recipients see.
+
+```bash
+# Set / change the display name (server-validated: 422 DISPLAY_NAME_INVALID)
+rly mailbox update support-bot --display-name "Acme Support"
+
+# Clear it (the From line falls back to the mailbox name)
+rly mailbox update support-bot --clear-display-name
+```
+
+`--display-name` and `--clear-display-name` are mutually exclusive. A display-name-only
+`update` sends just the name change — it does not touch the mailbox scanner policy.
+`mailbox show` and `mailbox list` surface the server-computed `effective_from_display`
+("Sends as") — what recipients actually see.
 
 ### Sending Email
 
@@ -378,6 +459,10 @@ rly api-key create --role admin --label ops-key
 # List all keys
 rly api-key list
 
+# Replace an agent key's mailbox bindings in place (keeps the secret — no
+# agent redeploy). --mailbox is the COMPLETE new set; repeat for multiple.
+rly api-key update <key-id> --mailbox support-bot --mailbox billing-bot
+
 # Revoke a key
 rly api-key revoke <key-id>
 
@@ -483,7 +568,7 @@ Customize which scanning criteria run on a per-mailbox basis.
 # Disable PII detection on a mailbox
 rly mailbox update support-bot --disable-scanner pii
 
-# Tune outbound PII send safety by type (Pro+ for relaxed/review values)
+# Tune outbound PII send safety by type (Pro+ for relaxed values; review is every-tier)
 rly mailbox update support-bot \
   --scanner-policy '{"outbound_pii_policy":{"ssn":"quarantine","credit_card":"review","phone_number":"allow"}}'
 
@@ -512,7 +597,7 @@ rly mailbox update support-bot --scanner-policy '{"language_mode":"disabled","di
 
 **Scanning is directional by design.** Outbound text that resembles prompt-injection is your agent's own authored content and is delivered clean, while inbound prompt-injection is quarantined; inbound credential-looking values are also delivered clean (the `secrets` scanner is outbound-only).
 
-**Outbound PII actions:** `allow`, `allow_with_warning`, `review`, `quarantine`, `block` for `ssn`, `credit_card`, and `phone_number`. Platform defaults are `ssn=quarantine`, `credit_card=quarantine`, and `phone_number=allow_with_warning`. `review` routes matching sends to Pending approval and requires both Pro+ outbound PII controls and the review queue feature. Relaxing below defaults requires Pro+ (`pii_advanced_controls`); stricter/default values are accepted on every tier.
+**Outbound PII actions:** `allow`, `allow_with_warning`, `review`, `quarantine`, `block` for `ssn`, `credit_card`, and `phone_number`. Platform defaults are `ssn=quarantine`, `credit_card=quarantine`, and `phone_number=allow_with_warning`. `review` routes matching sends to your review queue (approve/deny) — available on every tier. Relaxing below defaults requires Pro+ (`pii_advanced_controls`); stricter/default values are accepted on every tier.
 
 **Outbound approval notes:** `outbound_review_policy.approval_note` is `optional` by default. Set `required_for_sensitive_pii` to require an approval note before sending SSN or credit-card review holds.
 
@@ -568,7 +653,64 @@ rly webhook rotate-secret <id>
 rly webhook test <id>
 rly webhook deliveries <id>
 rly webhook retry <id> <delivery-id>
+
+# Send a REAL-SHAPED test payload for a specific event instead of the default
+# webhook.test envelope — useful for exercising your signature-verification
+# and parsing code against the actual payload shape.
+rly webhook test <id> --event message.delivered
+rly webhook test <id> --event message.bounced
+rly webhook test <id> --event recipient_blocklist.added
 ```
+
+### Simulator
+
+Prove outbound send, provider-style outcomes, webhook signature handling, and inbound
+receive/quarantine without relying on a real recipient or another provider's
+simulator. The canonical scenario, accounting, suppression, and response contract is
+the [email simulator guide](https://replylayer.ai/docs/guides/simulator).
+
+**Outbound** — send to any of these `simulator.replylayer.net` addresses like a normal
+recipient. The send is accepted immediately (no network call); the outcome fires a few
+seconds later, mirroring how a real provider's webhook arrives after the send response:
+
+```bash
+rly send --from <mailbox> --to delivered@simulator.replylayer.net --subject hi --body hi
+rly send --from <mailbox> --to bounced@simulator.replylayer.net --subject hi --body hi
+rly send --from <mailbox> --to complained@simulator.replylayer.net --subject hi --body hi
+rly send --from <mailbox> --to suppressed@simulator.replylayer.net --subject hi --body hi
+```
+
+Append `+<label>` to the localpart for your own correlation (e.g.
+`delivered+test-run-42@simulator.replylayer.net`) — it has no effect on behavior.
+`simulator.replylayer.ai` is a rejected lookalike, not an alias — it is NOT recognized
+and routes to your real configured provider (which will hard-bounce, since that domain
+accepts no real mail).
+
+`complained@` / `suppressed@` prove webhook delivery and signature handling ONLY — no
+real suppression row is ever written, so a follow-up send to
+`suppressed@simulator.replylayer.net` is **not** actually blocked by your own pre-send
+suppression gate. Simulator sends charge paygo and consume sandbox daily send budget
+exactly like a real send. The exact four scenarios and their `+label` forms bypass
+Sandbox recipient-domain concentration limits, so one Sandbox account can run the
+whole matrix in one day; daily and cumulative allowances still apply.
+
+**Inbound** — inject a synthetic message through the real ingestion + scanning
+pipeline (the scanner verdict is genuine, not stubbed):
+
+```bash
+rly simulate inbound --mailbox <mailbox> --scenario clean
+rly simulate inbound --mailbox <mailbox> --scenario prompt_injection_quarantined
+rly simulate inbound --mailbox <mailbox> --scenario clean --label my-test-run
+```
+
+`clean` ends up `available`. `prompt_injection_quarantined` produces a genuine
+scanner-driven `prompt-injection` finding — the terminal state is `quarantined` when the
+scanner's structural non-override protection is live on the target deployment, otherwise
+whatever the scanner actually decides (never fabricated). The response's `status` is
+`available` | `quarantined` | `pending` (scanning hadn't finished within the poll window
+— check `rly inbox list` or `rly inbox wait` for the eventual state). Does NOT exercise
+per-mailbox sender-firewall rules (allowlist/blocklist) — `firewall_blocked` is not a
+reachable outcome for this command.
 
 ### Legal Holds (Pro+)
 
@@ -591,6 +733,42 @@ rly firewall-release <message-id>
 ```
 
 This is distinct from `rly inbox release`, which releases a message quarantined by the **content scanner**.
+
+### Policy
+
+State what an agent may do with a mailbox in plain English, preview the effect before you change anything, and lock it down from a terminal in an incident. Full guide: the [Policy page in your dashboard](https://app.replylayer.ai/policy).
+
+```bash
+# Read the effective policy for a mailbox — works with an agent-scoped key too.
+rly policy show --mailbox support
+
+# Dry-run a sample send against the current policy — no message is sent.
+rly policy check --mailbox support --to newcontact@example.com
+rly policy check --mailbox support --to newcontact@example.com --content-scan
+
+# Apply a mode: read_only | draft_only | supervised | trusted.
+rly policy set-mode supervised --mailbox support
+
+# A restricting mode on a mailbox with an EMPTY approved-recipient list refuses
+# with ALLOWLIST_EMPTY. --force-empty acknowledges and applies the full mode
+# anyway (agent sends to new/off-thread recipients stay blocked until you add
+# entries; in-thread replies and your own sends are unaffected).
+rly policy set-mode supervised --mailbox support --force-empty
+
+# Incident response — lock every mailbox in the account to read-only in one command.
+rly policy set-mode read_only --all-mailboxes
+
+# Account daily send cap (tightening only from a bearer key).
+rly policy cap --daily 200
+rly policy cap --clear
+
+# Per-mailbox send window (agent-origin sends only).
+rly policy window --mailbox support --timezone Europe/London \
+  --days mon,tue,wed,thu,fri --start 09:00 --end 18:00 --outside-action require_approval
+rly policy window --mailbox support --remove
+```
+
+**Tightening vs. loosening.** Applying a mode or setting a control that only narrows agent power (or leaves it unchanged) applies immediately with an admin key — that's what makes the one-command lockdown above possible. Anything that widens agent power — reopening sending, raising or clearing the daily cap, widening or removing a send window — refuses on a bearer key with `REAUTH_REQUIRES_SESSION` and tells you exactly which fields would loosen; complete it from the dashboard instead.
 
 ### Configuration
 
@@ -695,6 +873,8 @@ fi
 **`Error: Mailbox 'X' not found`** — The `--from` and `--mailbox` flags accept either the mailbox name or UUID. Check `rly mailbox list`.
 
 **`Error: Email not verified (EMAIL_NOT_VERIFIED)`** — Your account needs email verification before you can use the API. Check your inbox for a 6-digit code, then run `rly auth verify --code <code>`. If you didn't receive it, run `rly auth resend --email <your-email>`.
+
+**`Error: Phone not verified (PHONE_NOT_VERIFIED)`** — Your account still needs the signup SMS check. Run `rly auth verify-phone --code <code>`. If the SMS did not arrive, run `rly auth resend-phone`; use `--phone +<country-code>...` only to correct the pending number before verification.
 
 **`Error: Signups are currently invite-only`** — The platform requires an invite code during the pre-launch period. Add `--invite-code <code>` to your signup command.
 
