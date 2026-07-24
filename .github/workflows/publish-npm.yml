@@ -611,6 +611,22 @@ jobs:
           [ "$(sha256sum /tmp/registry.tgz | cut -d' ' -f1)" = "$EXP_SHA256" ] || { echo "::error::registry tarball sha256 mismatch"; exit 1; }
           echo "registry bytes OK"
 
+      - name: Wait for attestation propagation (bounded)
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # The registry's attestation read path can lag the publish by seconds
+          # (the 0.7.13 first run 404'd 11s post-publish). npm audit signatures
+          # treats a 404 here as fatal, so wait for a 200 first — bounded.
+          for i in $(seq 1 20); do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' "https://registry.npmjs.org/-/npm/v1/attestations/rly@${VERSION}")
+            [ "$CODE" = "200" ] && { echo "attestations visible (tick $i)"; exit 0; }
+            sleep 15
+          done
+          echo "::error::attestations for rly@${VERSION} not visible after bounded polling — provenance may be genuinely absent"
+          exit 1
+
       - name: Clean install from the registry; both aliases; signatures; latest tag
         env:
           VERSION: ${{ inputs.version }}
