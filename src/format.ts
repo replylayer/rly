@@ -419,6 +419,12 @@ export function formatSendResult(result: {
   // A vendor-neutral one-read discriminator (sent / held_for_review /
   // held_infrastructure / blocked) so the agent need not re-derive it from
   // status + scan + hold_context. Colorized by outcome class.
+  //
+  // Green is reserved for the ONE known success. The final `else` used to paint
+  // every UNRECOGNIZED member green — so a server running ahead of this binary
+  // would show a human a terminal failure in the success colour. That is the
+  // one place the client estate failed OPEN on an unknown status; everywhere
+  // else already fails closed (`strict-outcome.ts` → exit 6, MCP → isError).
   const effectNote = (): string => {
     const es = result.email_effect?.effect_status;
     if (!es) return '';
@@ -427,7 +433,9 @@ export function formatSendResult(result: {
         ? color.red(es)
         : es === 'held_infrastructure' || es === 'held_for_review'
           ? color.yellow(es)
-          : color.green(es);
+          : es === 'sent'
+            ? color.green(es)
+            : color.red(`${es} (unrecognized — upgrade rly)`);
     return '\n' + `${color.bold('Effect:')}  ${painted}`;
   };
 

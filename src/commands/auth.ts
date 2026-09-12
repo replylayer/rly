@@ -11,6 +11,7 @@ import {
 import { LocalCliError } from '../errors.js';
 import { ApiError } from '../types.js';
 import { output } from '../format.js';
+import { maskApiKeyForDisplay } from '../redact.js';
 
 export function authCommand(): Command {
   const auth = new Command('auth').description('Manage authentication');
@@ -153,12 +154,13 @@ function statusCommand(): Command {
       const opts = cmd.optsWithGlobals();
       const { apiKey, source } = resolveApiKey(opts.apiKey);
 
+      // `key_preview` is the dashboard's masked form (`rly_live_<public_id>.****`)
+      // so a user can match the key the CLI is using to a row in the web key
+      // list. Field name kept for `--json` consumers; only the value shape moved.
       const data = {
         authenticated: !!apiKey,
         source,
-        key_preview: apiKey
-          ? apiKey.substring(0, 10) + '...' + apiKey.substring(apiKey.length - 4)
-          : null,
+        key_preview: apiKey ? maskApiKeyForDisplay(apiKey) : null,
       };
 
       if (opts.json) {

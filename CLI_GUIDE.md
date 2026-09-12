@@ -132,8 +132,14 @@ rly --api-key rly_live_k3m9p2qx7vn4hjd0.uZ8Qb1vK3mN0pR7sT2wX9yA4cF6gH8jL1nP3rT5v
 ```bash
 rly auth status
 # Authenticated: yes
-# Source: env (REPLYLAYER_API_KEY)
+# Source: env
+# Key: rly_live_k3m9p2qx7vn4hjd0.****
 ```
+
+`Key` is the masked form: the public id before the dot (not a secret) plus
+`****` in place of the secret. It is byte-for-byte what the dashboard's key list
+shows for the same key, so you can tell which key the CLI is using. Legacy
+`rl_live_` keys have no public id and fall back to a head-and-tail preview.
 
 ## Quick Start
 
@@ -648,6 +654,18 @@ rly webhook get <id>
 rly webhook update <id> --url https://new-url.example.com
 rly webhook delete <id>
 
+# Custom request headers — for a receiver that authenticates by a fixed header
+# rather than by our HMAC signature. Max 8 per webhook; sent on every delivery
+# attempt, every retry, and `webhook test`.
+rly webhook create --url https://yourapp.example.com/hooks \
+  --event message.received \
+  --header "Authorization: Bearer your-receiver-token"
+
+# --header on update REPLACES the whole map (there is no per-header edit — the
+# stored values cannot be read back). --clear-headers removes them all.
+rly webhook update <id> --header "Authorization: Bearer rotated-token"
+rly webhook update <id> --clear-headers
+
 # Rotate the signing secret, send a test delivery, or inspect/retry deliveries
 rly webhook rotate-secret <id>
 rly webhook test <id>
@@ -661,6 +679,8 @@ rly webhook test <id> --event message.delivered
 rly webhook test <id> --event message.bounced
 rly webhook test <id> --event recipient_blocklist.added
 ```
+
+Header **values are write-only**: no read path returns one, so `rly webhook list` and `rly webhook get` show `request_header_names` (lower-cased and sorted) and never a value. Names must match `^[A-Za-z0-9-]{1,64}$` and values must be 1–1024 printable-ASCII characters; `content-type`, `content-length`, `host`, `user-agent`, `x-replylayer-signature`, `x-webhook-timestamp`, `x-webhook-signature-v2`, `transfer-encoding`, `connection`, `expect`, `te`, `upgrade`, `keep-alive`, `trailer`, and anything starting with `proxy-` are reserved and rejected. `--header` splits on the first colon only, so a value may contain colons.
 
 ### Simulator
 
