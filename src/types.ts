@@ -245,6 +245,10 @@ export interface CreateWebhookResponse {
   enabled: boolean;
   enabled_events: string[];
   signing_secret: string;
+  // Migration 134 — configured custom-header NAMES, lower-cased and sorted;
+  // [] when none. Never a value: those are write-only and no read path
+  // returns one, so the CLI has nothing to print but the names.
+  request_header_names: string[];
   created_at: string;
 }
 export interface WebhookSummary {
@@ -253,6 +257,8 @@ export interface WebhookSummary {
   description: string | null;
   enabled: boolean;
   enabled_events: string[];
+  // See CreateWebhookResponse.request_header_names.
+  request_header_names: string[];
   created_at: string;
   updated_at: string;
   consecutive_failures: number;

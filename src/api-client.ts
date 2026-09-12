@@ -917,7 +917,11 @@ export class ApiClient {
 
   // === Webhooks (G8) — 1:1 with the SDK webhook resource ===
 
-  async createWebhook(body: { url: string; description?: string; enabled_events: string[]; enabled?: boolean }): Promise<CreateWebhookResponse> {
+  // `request_headers` (migration 134): at most 8 static headers added to every
+  // delivery for this webhook. Passed through verbatim — the server is the
+  // single validator and re-validates again on the delivery path, so the CLI
+  // keeps no copy of the reserved list to drift from.
+  async createWebhook(body: { url: string; description?: string; enabled_events: string[]; enabled?: boolean; request_headers?: Record<string, string> }): Promise<CreateWebhookResponse> {
     return this.request<CreateWebhookResponse>('POST', '/v1/webhooks', { body });
   }
 
@@ -929,7 +933,9 @@ export class ApiClient {
     return this.request<WebhookSummary>('GET', `/v1/webhooks/${id}`);
   }
 
-  async updateWebhook(id: string, body: { url?: string; description?: string | null; enabled_events?: string[]; enabled?: boolean }): Promise<WebhookSummary> {
+  // `request_headers` is three-way, like `description`: an object replaces the
+  // whole map, `null` clears it, and omitting the key leaves it untouched.
+  async updateWebhook(id: string, body: { url?: string; description?: string | null; enabled_events?: string[]; enabled?: boolean; request_headers?: Record<string, string> | null }): Promise<WebhookSummary> {
     return this.request<WebhookSummary>('PATCH', `/v1/webhooks/${id}`, { body });
   }
 
