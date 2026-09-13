@@ -19,7 +19,7 @@ from .loader import ReplyLayerLoader
 from .retriever import ReplyLayerRetriever
 from .toolkit import ReplyLayerToolkit
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 __all__ = [
     "ReplyLayerToolkit",

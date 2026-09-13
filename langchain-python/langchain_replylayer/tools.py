@@ -51,7 +51,10 @@ _SEND_STATUS_NOTE = (
     "can send), `retry_later` (a transient infrastructure hold — retry after "
     "`retry_after`), `rate_limited` (a send limit was hit — read `variant`), or "
     "`error` (another client-side problem — read `code`/`details`). Only "
-    "authentication failures and unexpected server errors are raised."
+    "authentication failures and unexpected server errors are raised. "
+    "For IDEMPOTENT_REQUEST_NOT_PROVEN_SENT, delivery is indeterminate: keep "
+    "the original key, pause automatic sends, and ask an operator to reconcile "
+    "the attempt. Never report success or mint a new key to bypass it."
 )
 
 _SCAN_NOTE = (
@@ -131,7 +134,9 @@ class SendEmailInput(BaseModel):
         default=None,
         description=(
             "Optional stable key so a retried identical send produces at most "
-            "one email and one charge."
+            "one email and one charge. The workflow supplies this key, stable "
+            "across retries and restarts; never change it to bypass a hold or "
+            "an indeterminate result."
         ),
     )
 
@@ -144,7 +149,10 @@ class ReplyToEmailInput(BaseModel):
         default=None,
         description=(
             "Optional stable key so a retried identical reply produces at most "
-            "one email and one charge."
+            "one email and one charge. For automatic replies, derive it from "
+            "workflow, mailbox, inbound message id, and action. Reuse it across "
+            "retries and restarts; never change it to bypass a hold or an "
+            "indeterminate result."
         ),
     )
 

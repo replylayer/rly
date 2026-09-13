@@ -172,6 +172,20 @@ def map_send_error(err: ReplyLayerError) -> dict[str, Any]:
     remaining client-side 4xx as a visible ``error`` dict. Authentication
     failures and 5xx faults re-raise.
     """
+    if err.code == "IDEMPOTENT_REQUEST_NOT_PROVEN_SENT":
+        # Preserve the existing error status/code contract, but do not tell an
+        # agent to fix inputs or mint a new key for an indeterminate dispatch.
+        return {
+            "status": "error",
+            "code": err.code,
+            "details": err.details,
+            "detail": str(err),
+            "agent_instructions": [
+                "Delivery is indeterminate. Do not report success or mark this work complete.",
+                "Keep the original idempotency key. Never use a new key to bypass this result.",
+                "Pause automatic sends and ask an operator to reconcile the existing attempt.",
+            ],
+        }
     if isinstance(err, EmailEffectRejectedError):
         return {
             "status": "rejected",

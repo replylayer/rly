@@ -1,0 +1,5 @@
+# Tested example dependencies, separate from the six-tool adapter's runtime floor.
+langgraph==1.0.1
+langchain-mcp-adapters==0.1.13
+# This adapter version uses the MCP 1.x session API; 2.x removed that import.
+mcp==1.26.0

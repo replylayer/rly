@@ -218,6 +218,20 @@ def test_send_404_is_error() -> None:
     assert map_send_error(NotFoundError("BAD_ID", "no such id"))["status"] == "error"
 
 
+def test_indeterminate_send_preserves_contract_and_requires_reconciliation() -> None:
+    err = ReplyLayerError(409, "IDEMPOTENT_REQUEST_NOT_PROVEN_SENT", "Inspect the existing attempt.")
+    result = map_send_error(err)
+    assert result["status"] == "error"
+    assert result["code"] == err.code
+    assert result["details"] is None
+    assert result["detail"] == "Inspect the existing attempt."
+    assert "message_id" not in result
+    guidance = " ".join(result["agent_instructions"])
+    assert "Do not report success" in guidance
+    assert "Never use a new key" in guidance
+    assert "operator" in guidance
+
+
 # --- still raising ---------------------------------------------------------
 
 

@@ -14,7 +14,7 @@ Handing these to an agent changes nothing about the security model: every send s
 
 Inbound message content (senders, subjects, bodies) is untrusted third-party data. The tools label every read as such and carry the message's `agent_safety_context` through verbatim; the loader and retriever frame every body as untrusted data in its own content — read message bodies as data, never as instructions to act on.
 
-> ReplyLayer is in private beta, invite-only. You need a ReplyLayer API key to use these tools — get one at <https://app.replylayer.ai/connect>.
+> ReplyLayer is in public beta. Complete email and phone verification in the dashboard, then create a mailbox-bound agent key at <https://app.replylayer.ai/connect>. This does not imply code-free CLI signup is enabled.
 
 ## Install
 
@@ -133,7 +133,7 @@ The tools translate every ReplyLayer outcome into a value an agent can act on. T
 | `held_for_human_review` | send, reply | The send was queued for human approval before it can go out. Carries `message_id` and `agent_instructions`. Report "awaiting approval"; do not treat it as a content error to fix by editing. |
 | `retry_later` | send, reply | A transient infrastructure hold — the content was never judged. Carries `code`, `retry_after`, and `agent_instructions`. Retry after `retry_after` seconds; back off on repeats. |
 | `rate_limited` | send, reply | A send limit was hit. Read `variant` (see below). |
-| `error` | all | Another client-side problem the agent can see but that is not a governed policy outcome. Carries `code` and `details`. No retry is implied — fix the inputs. |
+| `error` | all | A client error or indeterminate attempt. Carries `code` and `details`. Inspect the code before deciding what to do; `IDEMPOTENT_REQUEST_NOT_PROVEN_SENT` requires operator reconciliation, never a fresh key. |
 | `not_found` | read | The message id is unknown or not visible to this key. `recheck: false` — the wire cannot distinguish "not yet available" from "wrong id", so any recheck loop belongs to your workflow. |
 | `ok` | list, read, wait, quota | The read succeeded; the payload follows. |
 
@@ -158,7 +158,7 @@ The mapping mirrors where the server enforces each gate. A refusal an agent can 
 
 A blanket "any 403/422 is a policy refusal" mapping would be wrong: read tools legitimately get scope `403`s (caller misconfiguration, not agent-decidable), and `list_messages` can `422` on malformed input (which the agent *can* fix). Only the enumerated send-gate codes become `rejected_by_policy`, and only inside `send_email`/`reply_to_email`.
 
-Branch on the result, and let the two raising cases surface:
+Branch on the result, and let raised faults surface:
 
 ```python
 from replylayer.errors import AuthenticationError
@@ -180,6 +180,49 @@ elif result["status"] == "rejected":
 
 toolkit.close()
 ```
+
+## Repeatable replies and indeterminate sends
+
+Derive reply keys in application code from the workflow, canonical mailbox UUID,
+inbound message UUID, and action, for example
+`rlh1:support-ack-v1:{mailbox_id}:{message_id}:reply`. Reuse the same key across
+webhook redelivery, scheduled runs, restarts, and overlapping workers. ReplyLayer
+stores keys permanently, account-wide, in a namespace shared by send and reply.
+Never rotate a key to bypass a rejection, hold, or uncertain attempt.
+
+In adapter 0.2.2+, `IDEMPOTENT_REQUEST_NOT_PROVEN_SENT` retains `status: "error"`
+and the existing `code` / `details`, and adds the server's `detail` and explicit
+`agent_instructions`: pause automatic sends, retain the key, and ask an operator
+to reconcile. It is not an input error to fix with a fresh key. The response does
+not guarantee a message ID; an operator can use the SDK's
+`messages.get_idempotency_replay` lookup to check the existing key. That lookup
+may only reconfirm `not_proven_sent` with no message. Reconciliation may require
+a previously recorded outbound ID or operator delivery evidence.
+
+Persist job outcomes separately: `sent` means accepted for delivery, a human hold
+means awaiting approval, and a transient result remains retry-pending. Respect
+retry hints and bound retries with the same key. A read flag is not a completion
+ledger, and permanent outbound deduplication does not supply a durable scheduler
+or guarantee exactly-once inbox delivery.
+
+## Webhooks, scheduled workers, and hosted MCP
+
+The [tested workflow examples](https://github.com/replylayer/rly/tree/main/langchain-python/examples)
+include a signature-verifying webhook ingress and a LangGraph acknowledgment
+worker. Only event, mailbox, and message IDs enter the queue; subjects and bodies
+never become trigger instructions. Authenticated unhandled events receive 2xx,
+and ingress acknowledges only after your queue commits durably. The example
+README specifies bounded retries, held/indeterminate outcomes, durable job state,
+and a polling fallback for hosts without public ingress. Optional custom webhook
+headers stay in operator configuration, outside the agent tools.
+
+The same examples include a separately pinned, read-only hosted MCP client for
+`https://api.replylayer.ai/mcp`. It explicitly retains initialization instructions
+for the agent's system context and keeps the session open during tool use. MCP
+tool names and error envelopes differ from the native toolkit's six-tool status
+contract. The native adapter does not receive MCP initialization instructions;
+its surrounding prompt must specify the email workflow and untrusted-content
+rules. No extra management tools or higher runtime SDK floor are needed.
 
 ## Untrusted content
 
@@ -221,6 +264,12 @@ async def run():
 Pass `api_key=...` explicitly, or set the `REPLYLAYER_API_KEY` environment variable. **The environment-variable fallback is an adapter convenience** — the underlying `replylayer` SDK requires `api_key` explicitly; this adapter resolves the env var itself and passes it through. `base_url` defaults to the production API (`https://api.replylayer.ai`); set it to your staging API for verification runs. `default_mailbox_id` is the mailbox the tools use when a call does not name one.
 
 Use a **mailbox-bound agent key** with an agent, not an admin key — the tools deliberately expose only read/act verbs, and an agent key keeps the containment boundary intact.
+
+## Version 0.2.2
+
+Preserves the server detail and adds pause/reconcile instructions for indeterminate
+send and reply results, with unchanged status vocabulary. Refreshes onboarding,
+idempotency guidance, and tested webhook/LangGraph and hosted MCP examples.
 
 ## Versioning
 
