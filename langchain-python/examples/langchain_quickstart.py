@@ -10,11 +10,10 @@ Environment
 -----------
 REPLYLAYER_API_KEY   (required)  a staging sandbox, mailbox-bound agent key.
 REPLYLAYER_MAILBOX   (required)  the sending mailbox id or name.
-REPLYLAYER_BASE_URL  (optional)  point this at your STAGING API for a verification
-                                 run; defaults to the documented production base.
-REPLYLAYER_TO        (optional)  recipient to try; defaults to an address that is
-                                 (deliberately) unlikely to be on the allowlist,
-                                 so the refusal branch actually runs.
+REPLYLAYER_BASE_URL  (required)  explicitly choose your staging API.
+REPLYLAYER_TO        (required)  a test recipient you control.
+REPLYLAYER_IDEMPOTENCY_KEY (required) persisted key for this send intent; reuse
+                                 across reruns, never to bypass a held outcome.
 OPENAI_API_KEY       (optional)  used only by the final, optional real-agent
                                  section, which needs the `[examples]` extra.
 
@@ -31,11 +30,11 @@ from replylayer.errors import AuthenticationError
 
 from langchain_replylayer import ReplyLayerToolkit
 
-# base_url is parameterized — set REPLYLAYER_BASE_URL to your staging API for a
-# verification run; it defaults to the documented production base.
-BASE_URL = os.environ.get("REPLYLAYER_BASE_URL", "https://api.replylayer.ai")
+# Require an explicit environment for this live-send walkthrough.
+BASE_URL = os.environ.get("REPLYLAYER_BASE_URL", "")
 MAILBOX = os.environ.get("REPLYLAYER_MAILBOX", "")
-TO = os.environ.get("REPLYLAYER_TO", "not-on-your-allowlist@example.com")
+TO = os.environ.get("REPLYLAYER_TO", "")
+IDEMPOTENCY_KEY = os.environ.get("REPLYLAYER_IDEMPOTENCY_KEY", "")
 
 # A recent-message scan is bounded — never walk the whole mailbox.
 MAX_ROWS_TO_SCAN = 5
@@ -44,13 +43,13 @@ MAX_ROWS_TO_SCAN = 5
 def demo_send(tools: dict) -> None:
     """Send once and branch on the governed outcome instead of catching an error.
 
-    A brand-new sandbox mailbox defaults to `allowlist` mode, so an off-list
-    recipient is refused BEFORE any bytes leave — surfaced as
-    `{status: "rejected_by_policy", code: "RECIPIENT_NOT_ON_ALLOWLIST"}`, a plain
-    dict the agent can branch on, not an exception.
+    Sandbox mailboxes default to blocklist mode; recipient confirmation and
+    containment still apply. Do not assume a particular refusal will occur.
+    An allowlist-mode mailbox can return RECIPIENT_NOT_ON_ALLOWLIST.
     """
     result = tools["send_email"].invoke(
-        {"to": TO, "subject": "Hello from my agent", "body": "Hi there — this is a test send."}
+        {"to": TO, "subject": "Hello from my agent", "body": "Hi there — this is a test send.",
+         "idempotency_key": IDEMPOTENCY_KEY}
     )
     status = result["status"]
     if status == "sent":
@@ -67,8 +66,10 @@ def demo_send(tools: dict) -> None:
         print(f"  transient infrastructure hold; retry after {result.get('retry_after')}s.")
     elif status == "rate_limited":
         print(f"  rate limited ({result['variant']}); back off before retrying.")
+    elif result.get("code") == "IDEMPOTENT_REQUEST_NOT_PROVEN_SENT":
+        print("  indeterminate: pause and reconcile with an operator; keep the original key.")
     else:  # "error"
-        print(f"  send could not be admitted: {result.get('code')} {result.get('details')}")
+        print(f"  send error: {result.get('code')} {result.get('details')}")
 
 
 def demo_quota(tools: dict) -> None:
@@ -118,7 +119,7 @@ def demo_read_untrusted(tools: dict) -> None:
 
 
 def demo_real_agent(tools: dict) -> None:
-    """OPTIONAL — hand the six governed tools to a real LangChain agent.
+    """OPTIONAL — grant only the quota tool to a real LangChain agent.
 
     Skipped gracefully unless the `[examples]` extra is installed AND
     OPENAI_API_KEY is set. The agent provider named here is example wiring only.
@@ -133,7 +134,7 @@ def demo_real_agent(tools: dict) -> None:
         print('  skipped: install the extra — pip install "langchain-replylayer[examples]".')
         return
 
-    agent = create_agent(ChatOpenAI(model="gpt-4o-mini"), tools=list(tools.values()))
+    agent = create_agent(ChatOpenAI(model="gpt-4o-mini"), tools=[tools["check_send_quota"]])
     response = agent.invoke(
         {
             "messages": [
@@ -160,14 +161,18 @@ def main() -> int:
         print("Set REPLYLAYER_MAILBOX to the sending mailbox id or name first.")
         return 1
 
+    if not BASE_URL or not TO or not IDEMPOTENCY_KEY.strip():
+        print("Set REPLYLAYER_BASE_URL, REPLYLAYER_TO, and REPLYLAYER_IDEMPOTENCY_KEY first.")
+        return 1
+
     print(f"ReplyLayer LangChain quickstart against {BASE_URL} (mailbox: {MAILBOX})")
     with ReplyLayerToolkit(api_key=api_key, base_url=BASE_URL, default_mailbox_id=MAILBOX) as toolkit:
         tools = {tool.name: tool for tool in toolkit.get_tools()}
         try:
-            print("\n1) send (watch the allowlist gate):")
-            demo_send(tools)
-            print("\n2) quota preflight:")
+            print("\n1) quota preflight:")
             demo_quota(tools)
+            print("\n2) send (observe the governed outcome):")
+            demo_send(tools)
             print("\n3) read a message as untrusted data:")
             demo_read_untrusted(tools)
             print("\n4) optional real agent:")

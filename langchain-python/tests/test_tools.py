@@ -7,11 +7,37 @@ model, so the whole suite is hermetic. Every mocked status here (200/403/404/
 from __future__ import annotations
 
 import httpx
+import pytest
 import respx
 
 from langchain_replylayer import ReplyLayerToolkit
 
 _BASE = "https://api.test.local"
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("name,path,args", [
+    ("send_email", "/v1/messages/send", {"to": "user@example.com", "subject": "Hi", "body": "Hello"}),
+    ("reply_to_email", "/v1/messages/in-1/reply", {"message_id": "in-1", "body": "Thanks"}),
+])
+async def test_indeterminate_send_does_not_resubmit(asynchronous, name, path, args):
+    key = "rlh1:support-ack-v1:mailbox:message:reply"
+    with respx.mock(base_url=_BASE) as router:
+        route = router.post(path).respond(409, json={
+            "code": "IDEMPOTENT_REQUEST_NOT_PROVEN_SENT",
+            "error": "Inspect the existing attempt.",
+        })
+        tools, toolkit = _tools()
+        try:
+            inputs = {**args, "idempotency_key": key}
+            result = await tools[name].ainvoke(inputs) if asynchronous else tools[name].invoke(inputs)
+            assert result["status"] == "error"
+            assert result["detail"] == "Inspect the existing attempt."
+            assert result["agent_instructions"]
+            assert route.call_count == 1
+            assert route.calls.last.request.headers["Idempotency-Key"] == key
+        finally:
+            await toolkit.aclose()
 
 
 def _tools():
