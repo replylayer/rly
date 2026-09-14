@@ -148,7 +148,7 @@ shows for the same key, so you can tell which key the CLI is using. Legacy
 rly signup --email you@example.com --phone +13125550123 --accept-terms \
   --cli-signup-code rls_cli_<code>
 
-# During invite-only period, use --invite-code instead
+# On an environment with an invite gate configured, use --invite-code instead
 rly signup --email you@example.com --phone +13125550123 --accept-terms --invite-code <code>
 
 # Verify your email (check inbox for 6-digit code)
@@ -189,7 +189,7 @@ rly inbox wait --mailbox support-bot --timeout 30
 rly signup --email you@example.com --phone +13125550123 --accept-terms \
   --cli-signup-code rls_cli_<code>
 
-# Invite-only environments — operator-issued invite code
+# Environments with an invite gate configured — operator-issued invite code
 rly signup --email you@example.com --phone +13125550123 --accept-terms --invite-code <code>
 
 rly account usage                                   # Usage + tier limits (admin key)
@@ -227,6 +227,10 @@ rly auth resend-phone --phone +13125550124 # Correct an unverified number and re
 **Email verification notes:** Verification codes are valid for **10 minutes**. If you did not receive the email, first check your spam folder — then use `auth resend` to request a new code. Resends are rate-limited to **3 per hour per IP address**. If your current code has not yet expired you will get the same success response without a new email being sent; this is by design (anti-abuse). If `auth verify` reports `VERIFICATION_CODE_EXPIRED`, run `auth resend` to get a fresh code.
 
 **Phone verification notes:** Every new account needs a mobile number with country code. SMS codes are valid for **5 minutes**, and only the newest challenge is accepted. Use `auth resend-phone` after the 30-second cooldown if no SMS arrives. The command reports only the masked destination. Before verification, `--phone` corrects a typo and sends a new challenge; it cannot replace an already-verified number. On `PHONE_VERIFICATION_RATE_LIMITED`, wait for the API's `Retry-After` interval.
+
+**If `rly signup` says the SMS could not be sent:** your account WAS created and your API key is already stored — only the SMS failed, and nothing retries it on its own. Run `rly auth resend-phone` (add `--phone +<country-code>…` if the number was wrong). In `--json` mode this is `sms_delivery_status: "failed"`, distinct from `"pending"`, which means no terminal outcome was observed and a resend is also the right next step.
+
+**If `rly signup` is rate-limited or temporarily unavailable:** signups are capped at **5 per hour per network**, shared with the dashboard, so a shared office or VPN address can hit the ceiling collectively. `SIGNUP_RATE_LIMITED` carries a `Retry-After` — wait it out and re-run. `SIGNUP_TEMPORARILY_UNAVAILABLE` means the service that enforces that cap is briefly unreachable and signups are refused rather than left unguarded; retry shortly. Neither creates a partial account.
 
 ### Mailboxes
 
@@ -896,7 +900,7 @@ fi
 
 **`Error: Phone not verified (PHONE_NOT_VERIFIED)`** — Your account still needs the signup SMS check. Run `rly auth verify-phone --code <code>`. If the SMS did not arrive, run `rly auth resend-phone`; use `--phone +<country-code>...` only to correct the pending number before verification.
 
-**`Error: Signups are currently invite-only`** — The platform requires an invite code during the pre-launch period. Add `--invite-code <code>` to your signup command.
+**`Error: Signups are currently invite-only`** — The API you are signing up against has an invite gate configured (an operator setting), so signup there needs a valid invite code. Add `--invite-code <code>` to your signup command. **New to ReplyLayer?** Public signup is open at `https://app.replylayer.ai/signup`.
 
 **`CLI_SIGNUP_CODE_REQUIRED`** — At public launch the CLI requires a dashboard-issued signup code to create a **separate** new account. **New to ReplyLayer?** Create your first account at `https://app.replylayer.ai/signup`, then sign in. **Already have an account?** Sign in at `https://app.replylayer.ai`, navigate to the "Additional CLI accounts" affordance, generate a code, then re-run with `--cli-signup-code rls_cli_...`. Note: this creates a brand-new account, not an agent key for your existing account. To connect an agent to your existing account, use Connect Agent -> generate an agent API key -> `rly auth login`.
 

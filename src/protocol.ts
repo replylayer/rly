@@ -403,7 +403,8 @@ export interface SignupResponse {
   verification_required?: boolean;
   email_verification_required?: boolean;
   phone_verification_required?: boolean;
-  sms_delivery_status?: 'sent' | 'pending' | 'not_required';
+  /** 'failed' = the initial SMS did not go out; recover with `rly auth resend-phone`. */
+  sms_delivery_status?: 'sent' | 'pending' | 'failed' | 'not_required';
   phone_number_masked?: string | null;
   message?: string;
 }

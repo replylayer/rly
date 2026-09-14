@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "package": "rly",
-  "version": "0.7.14",
-  "canonical_commit": "5053124f885a130732352d0ddb02d7488ba1d6a2",
-  "managed_tree_sha256": "3da1e14eb9d50b67fd9515683c8d95bea5b8fe00541aa95e40ac812281a683de"
+  "version": "0.7.15",
+  "canonical_commit": "674596377571285cb57737beb6b6dc7a83b65a7c",
+  "managed_tree_sha256": "f7c44b1cd18355bdb0c8da05aff0a007cecb8dc58b68860b91847050b92fc3b9"
 }

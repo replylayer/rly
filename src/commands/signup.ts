@@ -29,7 +29,7 @@ export function signupCommand(): Command {
       '--accept-web-risk',
       'Record an explicit acknowledgement of the URL-reputation disclosure (Google Web Risk subprocessor, imperfect protection). Optional: without it, URL reputation is still enabled by default under the Privacy Policy §7a signup disclosure.',
     )
-    .option('--invite-code <code>', 'Invite code (required during invite-only period)')
+    .option('--invite-code <code>', 'Invite code (only for environments with an invite gate configured)')
     .option(
       '--cli-signup-code <code>',
       'Dashboard-issued CLI signup code (rls_cli_…) for bootstrapping a SEPARATE account. Required at public launch — mint one from the dashboard.',
@@ -161,6 +161,12 @@ export function signupCommand(): Command {
         lines.push('');
         if (result.sms_delivery_status === 'sent') {
           lines.push(`An SMS verification code was sent to ${result.phone_number_masked ?? 'your phone'}.`);
+        } else if (result.sms_delivery_status === 'failed') {
+          // Terminal for THIS attempt — nothing is in flight and nothing will
+          // retry on its own, so the instruction has to be an action, not a
+          // suggestion to wait. The account exists; only the SMS did not go.
+          lines.push('Your account was created, but the SMS code could not be sent.');
+          lines.push('Request a new one with: rly auth resend-phone');
         } else {
           lines.push('The SMS code could not be sent yet. Retry with: rly auth resend-phone');
         }
