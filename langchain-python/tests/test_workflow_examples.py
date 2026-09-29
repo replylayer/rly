@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 import time
 
-import httpx
 import pytest
 import respx
 
@@ -74,6 +73,8 @@ def test_key_is_canonical_and_workflow_scoped():
     ({"status": "rejected_by_policy"}, "blocked"),
     ({"status": "retry_later"}, "retry_pending"),
     ({"status": "rate_limited"}, "retry_pending"),
+    ({"status": "rate_limited", "variant": "short_window"}, "retry_pending"),
+    ({"status": "rate_limited", "variant": "failed_authentication"}, "needs_operator"),
     ({"status": "error", "code": "IDEMPOTENT_REQUEST_IN_FLIGHT"}, "retry_pending"),
     ({"status": "error", "code": "IDEMPOTENT_REQUEST_NOT_PROVEN_SENT"}, "needs_operator"),
 ])

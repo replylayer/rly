@@ -16,6 +16,8 @@ Inbound message content (senders, subjects, bodies) is untrusted third-party dat
 
 > ReplyLayer is in public beta. Complete email and phone verification in the dashboard, then create a mailbox-bound agent key at <https://app.replylayer.ai/connect>. This does not imply code-free CLI signup is enabled.
 
+[Start a free 30-day Sandbox](https://app.replylayer.ai/signup?plan=sandbox) · [Quickstart](https://replylayer.ai/docs/quickstart)
+
 ## Install
 
 ```bash
@@ -38,7 +40,7 @@ with ReplyLayerToolkit(default_mailbox_id="support") as toolkit:
     tools = {tool.name: tool for tool in toolkit.get_tools()}
 
     result = tools["send_email"].invoke(
-        {"to": "user@example.com", "subject": "Hi", "body": "Hello from my agent."}
+        {"to": "delivered@simulator.replylayer.net", "subject": "Hi", "body": "Hello from my agent."}
     )
 
     if result["status"] == "sent":
@@ -128,9 +130,9 @@ The tools translate every ReplyLayer outcome into a value an agent can act on. T
 | `status` | Tools | Meaning |
 |----------|-------|---------|
 | `sent` | send, reply | Accepted for delivery. Carries `message_id`. Not a safety judgment. |
-| `rejected_by_policy` | send, reply | A pre-admission gate refused the recipient **before any bytes left**: not on the allowlist, agent-contained, on your do-not-contact (suppression) list — including a platform-scoped hard-bounce hit — a failed recipient-verification/MX check, a sandbox budget/expiry limit, or a billing gate. Carries `code`, a human-readable `detail`, and `agent_instructions` when the server supplied them. Branch on `code`; don't retry unchanged. |
+| `rejected_by_policy` | send, reply | A pre-admission gate refused the recipient **before any bytes left**: not on the allowlist, agent-contained, on your do-not-contact (suppression) list — including a platform-scoped hard-bounce hit — a failed recipient-verification/MX check, the Sandbox recipient rule or a sandbox budget/expiry limit, or a billing gate. Carries `code`, a human-readable `detail`, and `agent_instructions`, `remedy` (and `upgrade_url`) when the server supplied them. Branch on `code`; don't retry unchanged. |
 | `rejected` | send, reply | Post-admission **content** block (terminal). Carries `code` and `agent_instructions`. Edit the content or escalate — never resend the same body. |
-| `held_for_human_review` | send, reply | The send was queued for human approval before it can go out. Carries `message_id` and `agent_instructions`. Report "awaiting approval"; do not treat it as a content error to fix by editing. |
+| `held_for_human_review` | send, reply | The send was queued for human approval before it can go out. Carries `message_id` and `agent_instructions`, plus `review_url` for the owner, when present. Report "awaiting approval"; do not treat it as a content error to fix by editing. |
 | `retry_later` | send, reply | A transient infrastructure hold — the content was never judged. Carries `code`, `retry_after`, and `agent_instructions`. Retry after `retry_after` seconds; back off on repeats. |
 | `rate_limited` | send, reply | A send limit was hit. Read `variant` (see below). |
 | `error` | all | A client error or indeterminate attempt. Carries `code` and `details`. Inspect the code before deciding what to do; `IDEMPOTENT_REQUEST_NOT_PROVEN_SENT` requires operator reconciliation, never a fresh key. |
@@ -144,6 +146,35 @@ The tools translate every ReplyLayer outcome into a value an agent can act on. T
 | `daily_budget` | `daily_limit`, `sends_remaining`, `reset_at` | The daily send budget is exhausted. Wait until `reset_at`. |
 | `new_account_warmup` | `retry_after_seconds` | A new paid account's warm-up throttle. |
 | `short_window` | `retry_after` | A generic short-window throttle. `retry_after` may be `null` when the server sent no hint. |
+| `failed_authentication` | — | Too many failed authentication attempts: the API key is wrong or revoked. **Stop — do not retry.** A human must fix the key. |
+
+### Sandbox recipients
+
+A Sandbox account can send only to recipients it has a basis for:
+
+- your account's own email address;
+- ReplyLayer's simulator scenario addresses;
+- a reply, or a continuation of a thread, to someone whose inbound message passed sender authentication with a matching domain;
+- a person who confirmed by clicking a link;
+- a person you vouched for.
+
+A reply to a sender who authenticated but whose domain did not match is refused, so that sender needs one of the other routes. Any other recipient is refused with `SANDBOX_RECIPIENT_NOT_VERIFIED`, which the toolkit returns as `rejected_by_policy`, with `remedy` and `upgrade_url` when the server supplies them. The toolkit's tools cannot add recipients. The account owner, or an uncontained agent API key, adds them in the dashboard, or with the MCP server (`add_recipient`), the CLI, or the Python SDK:
+
+```python
+from replylayer import ReplyLayer
+
+client = ReplyLayer(api_key="rly_...")
+
+# Sends the person a confirmation link; they become sendable when they click it.
+client.recipients.create(email="person@example.com")
+
+# Vouches for the person: sendable at once, but this spends one of the
+# account's limited trial attestations immediately. Attestations are never
+# refunded, including if the recipient is later deleted.
+client.recipients.create(email="person@example.com", attest=True)
+```
+
+Adding $5 of pay-as-you-go credit, or upgrading, lifts the rule.
 
 ## Error policy — what each tool returns vs raises
 
@@ -264,6 +295,22 @@ async def run():
 Pass `api_key=...` explicitly, or set the `REPLYLAYER_API_KEY` environment variable. **The environment-variable fallback is an adapter convenience** — the underlying `replylayer` SDK requires `api_key` explicitly; this adapter resolves the env var itself and passes it through. `base_url` defaults to the production API (`https://api.replylayer.ai`); set it to your staging API for verification runs. `default_mailbox_id` is the mailbox the tools use when a call does not name one.
 
 Use a **mailbox-bound agent key** with an agent, not an admin key — the tools deliberately expose only read/act verbs, and an agent key keeps the containment boundary intact.
+
+## Version 0.2.3
+
+- `SANDBOX_RECIPIENT_NOT_VERIFIED` now maps to `rejected_by_policy` instead of
+  `error`. A caller that branched on `error` with that code will now see
+  `rejected_by_policy`.
+- `rejected_by_policy` results carry `remedy` and `upgrade_url` when the server
+  supplies them.
+- `held_for_human_review` results carry `review_url` (and `review_expires_at`
+  when there is a deadline) when the server supplies them, so the agent can hand
+  the owner the review link.
+- Adds the `failed_authentication` variant to `rate_limited`: too many failed
+  authentication attempts mean the API key is wrong or revoked, so the agent
+  should stop and ask a human to fix the key rather than retry. The send and
+  reply tool descriptions say so, and the webhook/LangGraph example treats it as
+  `needs_operator` instead of a retry.
 
 ## Version 0.2.2
 

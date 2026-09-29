@@ -88,6 +88,58 @@ def test_held_maps_message_id_from_details_and_scan_instructions() -> None:
     }
 
 
+def test_held_includes_review_link_when_hold_context_carries_it() -> None:
+    err = EmailEffectHeldError(
+        "EMAIL_EFFECT_HELD",
+        "queued for review",
+        {
+            "email_effect": {"effect_status": "held_for_review"},
+            "scan": {"findings": [{"agent_instructions": ["Awaiting human approval."]}]},
+            "message_id": "mid-123",
+            "hold_context": {
+                "review_url": "https://app.replylayer.ai/review/mid-123",
+                "review_expires_at": "2026-10-01T00:00:00Z",
+            },
+        },
+    )
+    assert map_send_error(err) == {
+        "status": "held_for_human_review",
+        "message_id": "mid-123",
+        "agent_instructions": ["Awaiting human approval."],
+        "review_url": "https://app.replylayer.ai/review/mid-123",
+        "review_expires_at": "2026-10-01T00:00:00Z",
+    }
+
+
+def test_held_review_url_without_deadline_omits_expiry() -> None:
+    err = EmailEffectHeldError(
+        "EMAIL_EFFECT_HELD",
+        "queued for review",
+        {
+            "message_id": "mid-9",
+            "hold_context": {"review_url": "https://app.replylayer.ai/review/mid-9"},
+        },
+    )
+    result = map_send_error(err)
+    assert result["review_url"] == "https://app.replylayer.ai/review/mid-9"
+    assert "review_expires_at" not in result
+
+
+def test_held_empty_review_expires_at_is_omitted() -> None:
+    err = EmailEffectHeldError(
+        "EMAIL_EFFECT_HELD",
+        "queued for review",
+        {
+            "message_id": "mid-9",
+            "hold_context": {
+                "review_url": "https://app.replylayer.ai/review/mid-9",
+                "review_expires_at": "",
+            },
+        },
+    )
+    assert "review_expires_at" not in map_send_error(err)
+
+
 def test_retryable_maps_retry_after_from_headers_and_empty_instructions() -> None:
     err = EmailEffectRetryableError(
         "EMAIL_EFFECT_HELD_INFRA",
@@ -135,6 +187,23 @@ def test_rate_limited_new_account_warmup_variant() -> None:
         "code": "RATE_LIMITED",
         "variant": "new_account_warmup",
         "retry_after_seconds": 30,
+    }
+
+
+def test_rate_limited_failed_authentication_variant_is_a_stop() -> None:
+    # plans/api-key-brute-force-scoping-2026-09-23.md: the failed-auth 429 means
+    # the key is wrong or revoked. It must not read as a retryable throttle —
+    # no retry_after is surfaced, and it wins over the daily_limit/warm-up tests.
+    err = RateLimitError(
+        "RATE_LIMITED",
+        "Too many failed authentication attempts.",
+        {"retry-after": "30"},
+        {"reason": "failed_authentication", "retry_after": 30},
+    )
+    assert map_send_error(err) == {
+        "status": "rate_limited",
+        "code": "RATE_LIMITED",
+        "variant": "failed_authentication",
     }
 
 
@@ -199,6 +268,37 @@ def test_policy_refusal_includes_agent_instructions_when_present() -> None:
     assert result["agent_instructions"] == [
         "Ask a human to add the recipient to the allowlist."
     ]
+
+
+def test_sandbox_recipient_refusal_carries_remedy_and_upgrade_url() -> None:
+    err = ForbiddenError(
+        "SANDBOX_RECIPIENT_NOT_VERIFIED",
+        "recipient not verified",
+        {
+            "reason_axis": "sandbox_recipient",
+            "remedy": "confirm_recipient_or_upgrade",
+            "cheapest_next_step": "paygo",
+            "upgrade_url": "https://app.replylayer.ai/billing",
+            "attestations_limit": 5,
+            "attestations_remaining": 3,
+        },
+    )
+    assert map_send_error(err) == {
+        "status": "rejected_by_policy",
+        "code": "SANDBOX_RECIPIENT_NOT_VERIFIED",
+        "detail": "recipient not verified",
+        "remedy": "confirm_recipient_or_upgrade",
+        "upgrade_url": "https://app.replylayer.ai/billing",
+    }
+
+
+def test_policy_refusal_without_remedy_keeps_the_original_shape() -> None:
+    err = ForbiddenError("RECIPIENT_SUPPRESSED", "suppressed", {"remedy": "", "upgrade_url": 3})
+    assert map_send_error(err) == {
+        "status": "rejected_by_policy",
+        "code": "RECIPIENT_SUPPRESSED",
+        "detail": "suppressed",
+    }
 
 
 # --- non-policy client errors are visible but not raised -------------------

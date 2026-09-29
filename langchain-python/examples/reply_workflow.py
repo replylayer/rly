@@ -92,6 +92,9 @@ def completion_for(outcome: dict[str, Any]) -> str:
         return "needs_operator"
     if code == "IDEMPOTENT_REQUEST_IN_FLIGHT":
         return "retry_pending"
+    if outcome.get("status") == "rate_limited" and outcome.get("variant") == "failed_authentication":
+        # The API key is wrong or revoked: retrying cannot fix it.
+        return "needs_operator"
     return {
         "sent": "accepted",
         "held_for_human_review": "awaiting_human",

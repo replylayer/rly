@@ -54,15 +54,12 @@ SEND_POLICY_CODES: frozenset[str] = frozenset(
         # Sandbox budget/state gates — send-gates.md §6; errors.md "Send
         # gates — mailbox, domain & account state".
         #
-        # NOTE — FORBIDDEN is deliberately NOT here. The sandbox
-        # unconfirmed-recipient gate returns a bare 403 FORBIDDEN
-        # (send-gates.md §6), but FORBIDDEN is ALSO the generic "credential
-        # valid but not permitted for this resource" authorization code
-        # (errors.md:189, and the API-key-cap refusal). Plan §1.4's allowlist
-        # does not enumerate it, and mapping it to ``rejected_by_policy`` would
-        # mislabel a genuine credential/permission fault as a human-resolvable
-        # policy refusal. Left OUT: a FORBIDDEN on a send/reply falls through to
-        # the visible ``error`` mapping (§1.4: non-allowlisted 403 -> error).
+        # The Sandbox recipient gate returns SANDBOX_RECIPIENT_NOT_VERIFIED
+        # (403, with a denial envelope: remedy, upgrade_url). FORBIDDEN stays
+        # OUT: it is also the generic "credential valid but not permitted for
+        # this resource" authorization code, so a bare FORBIDDEN on a send
+        # falls through to the visible ``error`` mapping.
+        "SANDBOX_RECIPIENT_NOT_VERIFIED",
         "SANDBOX_TRIAL_BUDGET_EXHAUSTED",
         "SANDBOX_TRIAL_EXPIRED",
         # Send-path billing gates — errors.md "Billing".
@@ -104,16 +101,21 @@ def _message_id_from_details(details: Any) -> str | None:
 
 
 def _map_rate_limited(err: RateLimitError) -> dict[str, Any]:
-    """The three canonical ``RATE_LIMITED`` variants (agents/errors.md).
+    """The canonical ``RATE_LIMITED`` variants (agents/errors.md).
 
-    Discriminator: presence of ``details.daily_limit`` => daily budget; else
-    ``details.reason == 'new_account_warmup'`` => warm-up; else a generic
-    short-window throttle (``details.retry_after``, the ``Retry-After`` header,
-    or nothing at all).
+    Discriminator, checked in this order: ``details.reason ==
+    'failed_authentication'`` => the API key is wrong or revoked, a STOP, not a
+    retry (plans/api-key-brute-force-scoping-2026-09-23.md); presence of
+    ``details.daily_limit`` => daily budget; else ``details.reason ==
+    'new_account_warmup'`` => warm-up; else a generic short-window throttle
+    (``details.retry_after``, the ``Retry-After`` header, or nothing at all).
     """
     details = err.details if isinstance(err.details, dict) else {}
     result: dict[str, Any] = {"status": "rate_limited", "code": err.code}
-    if "daily_limit" in details:
+    if details.get("reason") == "failed_authentication":
+        # Waiting cannot fix a wrong or revoked key: no retry hint is surfaced.
+        result["variant"] = "failed_authentication"
+    elif "daily_limit" in details:
         result["variant"] = "daily_budget"
         result["daily_limit"] = details.get("daily_limit")
         result["sends_remaining"] = details.get("sends_remaining")
@@ -132,11 +134,13 @@ def _map_rate_limited(err: RateLimitError) -> dict[str, Any]:
 
 
 def _map_rejected_by_policy(err: ReplyLayerError) -> dict[str, Any]:
-    """Pre-admission gate refusal -> ``{status, code, detail, agent_instructions?}``.
+    """Pre-admission gate refusal -> ``{status, code, detail, agent_instructions?, remedy?, upgrade_url?}``.
 
     ``detail`` is the human sentence (``str(err)``) for an operator; branch on
-    ``code``. ``agent_instructions`` is included only when the server actually
-    supplied a list of them in ``details``.
+    ``code``. ``agent_instructions`` appears only when the server supplied a
+    non-empty list of strings in ``details``; ``remedy`` and ``upgrade_url``
+    appear only when ``details`` carries them as non-empty strings (a denial
+    envelope, e.g. ``SANDBOX_RECIPIENT_NOT_VERIFIED``).
     """
     result: dict[str, Any] = {
         "status": "rejected_by_policy",
@@ -147,6 +151,10 @@ def _map_rejected_by_policy(err: ReplyLayerError) -> dict[str, Any]:
         items = err.details.get("agent_instructions")
         if isinstance(items, list) and items and all(isinstance(i, str) for i in items):
             result["agent_instructions"] = list(items)
+        for key in ("remedy", "upgrade_url"):
+            value = err.details.get(key)
+            if isinstance(value, str) and value:
+                result[key] = value
     return result
 
 
@@ -193,11 +201,22 @@ def map_send_error(err: ReplyLayerError) -> dict[str, Any]:
             "agent_instructions": _agent_instructions_from_scan(err.scan),
         }
     if isinstance(err, EmailEffectHeldError):
-        return {
+        held: dict[str, Any] = {
             "status": "held_for_human_review",
             "message_id": _message_id_from_details(err.details),
             "agent_instructions": _agent_instructions_from_scan(err.scan),
         }
+        hold_context = (
+            err.details.get("hold_context") if isinstance(err.details, dict) else None
+        )
+        if isinstance(hold_context, dict):
+            review_url = hold_context.get("review_url")
+            if isinstance(review_url, str) and review_url:
+                held["review_url"] = review_url
+            review_expires_at = hold_context.get("review_expires_at")
+            if isinstance(review_expires_at, str) and review_expires_at:
+                held["review_expires_at"] = review_expires_at
+        return held
     if isinstance(err, EmailEffectRetryableError):
         return {
             "status": "retry_later",
