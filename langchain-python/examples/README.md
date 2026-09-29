@@ -7,7 +7,7 @@ code-free CLI signup is enabled. Keep admin credentials outside the agent.
 From this directory, install the adapter and the separately pinned example stack:
 
 ```bash
-pip install 'langchain-replylayer>=0.2.2' -r requirements-workflows.txt
+pip install 'langchain-replylayer>=0.2.3' -r requirements-workflows.txt
 ```
 
 The six-tool adapter still supports `replylayer>=0.23.0`; optional workflow and
