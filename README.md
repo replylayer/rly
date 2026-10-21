@@ -8,6 +8,10 @@ ReplyLayer provides safe email infrastructure for AI agents: mailboxes, sending,
 
 Command names: `rly` and `replylayer` (identical) — examples below use the shorter `rly`.
 
+Prefer MCP? The same platform is available to any MCP client through the hosted server at `https://api.replylayer.ai/v1/mcp` or the npm package `replylayer-mcp`.
+
+[![ReplyLayer MCP server](https://mcprush.com/badge/replylayer-mcp/card.svg)](https://mcprush.com/to/replylayer-mcp?ref=badge)
+
 ## Install
 
 ### npm
